@@ -24,6 +24,7 @@ export default function WritingScreen() {
 
   const [journalText, setJournalText] = useState("");
   const [showAddWordModal, setShowAddWordModal] = useState(false);
+  const [showVocabularyModal, setShowVocabularyModal] = useState(false);
   const [newWord, setNewWord] = useState("");
   const [newMeaning, setNewMeaning] = useState("");
   const [showHistory, setShowHistory] = useState(false);
@@ -187,67 +188,125 @@ export default function WritingScreen() {
             )}
           </View>
 
-          {/* Vocabulary Tracker Section */}
-          <View className="gap-3">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-lg font-semibold text-foreground">Vocabulary Tracker</Text>
-              <Text className="text-sm font-medium text-primary">
-                {todayWords.length}/5
-              </Text>
-            </View>
-
-            {/* Progress Bar */}
-            <View className="bg-surface rounded-full h-2 border border-border overflow-hidden">
-              <View
-                className="bg-primary h-full"
-                style={{ width: `${(todayWords.length / 5) * 100}%` }}
-              />
-            </View>
-
-            {/* Add Word Button */}
-            <TouchableOpacity
-              onPress={() => setShowAddWordModal(true)}
-              disabled={!canAddWord}
-              className={`rounded-lg py-3 items-center border-2 ${
-                canAddWord ? "border-primary bg-primary/10" : "border-border bg-surface opacity-50"
-              }`}
-              activeOpacity={canAddWord ? 0.8 : 1}
-            >
-              <Text className={`font-semibold ${canAddWord ? "text-primary" : "text-muted"}`}>
-                + Add Word
-              </Text>
-            </TouchableOpacity>
-
-            {/* Words List */}
-            {todayWords.length > 0 && (
-              <View className="gap-2">
-                {todayWords.map((word) => (
-                  <View key={word.id} className="bg-surface rounded-lg p-3 border border-border flex-row items-start justify-between">
-                    <View className="flex-1">
-                      <Text className="text-base font-semibold text-foreground">{word.word}</Text>
-                      {word.meaning && (
-                        <Text className="text-sm text-muted mt-1">{word.meaning}</Text>
-                      )}
-                    </View>
-                    <TouchableOpacity
-                      onPress={() => handleDeleteWord(word.id)}
-                      className="ml-2"
-                    >
-                      <IconSymbol size={20} name="chevron.right" color={colors.error} />
-                    </TouchableOpacity>
-                  </View>
-                ))}
+          {/* Vocabulary Button */}
+          <TouchableOpacity
+            onPress={() => setShowVocabularyModal(true)}
+            className="bg-surface rounded-lg py-4 px-4 border border-border flex-row items-center justify-between"
+            activeOpacity={0.8}
+          >
+            <View className="flex-row items-center gap-3 flex-1">
+              <View className="w-10 h-10 rounded-lg bg-primary/10 items-center justify-center">
+                <IconSymbol size={20} name="book.fill" color={colors.primary} />
               </View>
-            )}
-
-            {todayWords.length === 0 && (
-              <View className="bg-surface rounded-lg p-4 items-center border border-border">
-                <Text className="text-sm text-muted">No words added yet today</Text>
+              <View className="flex-1">
+                <Text className="text-base font-semibold text-foreground">Vocabulary</Text>
+                <Text className="text-xs text-muted mt-1">{state.vocabularyWords.length} words learned</Text>
               </View>
-            )}
-          </View>
+            </View>
+            <IconSymbol size={20} name="chevron.right" color={colors.muted} />
+          </TouchableOpacity>
+
+          {/* Today's Words Progress */}
+          {todayWords.length > 0 && (
+            <View className="bg-surface rounded-lg p-4 border border-border">
+              <View className="flex-row items-center justify-between mb-2">
+                <Text className="text-sm font-semibold text-foreground">Today's Words</Text>
+                <Text className="text-sm font-medium text-primary">{todayWords.length}/5</Text>
+              </View>
+              <View className="bg-border rounded-full h-2 overflow-hidden">
+                <View
+                  className="bg-primary h-full"
+                  style={{ width: `${(todayWords.length / 5) * 100}%` }}
+                />
+              </View>
+            </View>
+          )}
+
+          {/* Add Word Button */}
+          <TouchableOpacity
+            onPress={() => setShowAddWordModal(true)}
+            disabled={!canAddWord}
+            className={`rounded-lg py-3 items-center border-2 ${
+              canAddWord ? "border-primary bg-primary/10" : "border-border bg-surface opacity-50"
+            }`}
+            activeOpacity={canAddWord ? 0.8 : 1}
+          >
+            <Text className={`font-semibold ${canAddWord ? "text-primary" : "text-muted"}`}>
+              + Add Word Today
+            </Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* Vocabulary Modal */}
+      <Modal
+        visible={showVocabularyModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowVocabularyModal(false)}
+      >
+        <ScreenContainer className="p-6">
+          <View className="flex-row items-center justify-between mb-4">
+            <Text className="text-2xl font-bold text-foreground">Vocabulary</Text>
+            <TouchableOpacity onPress={() => setShowVocabularyModal(false)}>
+              <Text className="text-2xl text-muted">×</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {state.vocabularyWords.length > 0 ? (
+              <View className="gap-4">
+                {Object.entries(
+                  state.vocabularyWords.reduce((acc: any, word: any) => {
+                    if (!acc[word.dateAdded]) acc[word.dateAdded] = [];
+                    acc[word.dateAdded].push(word);
+                    return acc;
+                  }, {})
+                )
+                  .sort(([dateA], [dateB]) => dateB.localeCompare(dateA))
+                  .map(([date, words]: any) => (
+                    <View key={date}>
+                      <Text className="text-sm font-semibold text-foreground mb-2">
+                        {new Date(date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                      </Text>
+                      <View className="gap-2">
+                        {words.map((word: any) => (
+                          <View key={word.id} className="bg-surface rounded-lg p-3 border border-border flex-row items-start justify-between">
+                            <View className="flex-1">
+                              <Text className="text-base font-semibold text-foreground">{word.word}</Text>
+                              {word.meaning && (
+                                <Text className="text-sm text-muted mt-1">{word.meaning}</Text>
+                              )}
+                            </View>
+                            <TouchableOpacity
+                              onPress={() => handleDeleteWord(word.id)}
+                              className="ml-2"
+                            >
+                              <IconSymbol size={20} name="chevron.right" color={colors.error} />
+                            </TouchableOpacity>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  ))}
+              </View>
+            ) : (
+              <View className="items-center justify-center py-8">
+                <IconSymbol size={40} name="book.fill" color={colors.muted} />
+                <Text className="text-muted mt-3 text-center">No vocabulary words yet</Text>
+              </View>
+            )}
+          </ScrollView>
+
+          <TouchableOpacity
+            onPress={() => setShowVocabularyModal(false)}
+            className="border border-border rounded-lg py-3 items-center mt-4"
+            activeOpacity={0.8}
+          >
+            <Text className="text-foreground font-semibold">Close</Text>
+          </TouchableOpacity>
+        </ScreenContainer>
+      </Modal>
 
       {/* Add Word Modal */}
       <Modal

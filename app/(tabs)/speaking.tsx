@@ -16,7 +16,8 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import * as Haptics from "expo-haptics";
 import { Platform } from "react-native";
 import { getRandomTopic, formatDuration } from "@/lib/speaking-topics";
-import { useAudioPlayer, setAudioModeAsync } from "expo-audio";
+import { useAudioPlayer, setAudioModeAsync, useAudioRecorder, AudioModule, useAudioPlayerStatus } from "expo-audio";
+import * as FileSystem from "expo-file-system/legacy";
 
 export default function SpeakingScreen() {
   const { state, dispatch } = useLearning();
@@ -29,14 +30,50 @@ export default function SpeakingScreen() {
   const [recordingTime, setRecordingTime] = useState(0);
   const [selectedRecording, setSelectedRecording] = useState<any>(null);
   const [isPlayingRecording, setIsPlayingRecording] = useState(false);
+  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [recordingUri, setRecordingUri] = useState<string | null>(null);
+  const [playingRecordingId, setPlayingRecordingId] = useState<string | null>(null);
+  const [playbackPosition, setPlaybackPosition] = useState(0);
+  const [playbackDuration, setPlaybackDuration] = useState(0);
 
   const today = new Date().toISOString().split("T")[0];
+  const recorder = useAudioRecorder({
+    extension: ".m4a",
+    sampleRate: 44100,
+    numberOfChannels: 1,
+    bitRate: 128000,
+    android: {
+      extension: ".m4a",
+      outputFormat: 2,
+      audioEncoder: 3,
+      sampleRate: 44100,
+      numberOfChannels: 1,
+      bitRate: 128000,
+    },
+    ios: {
+      extension: ".m4a",
+      audioQuality: 96,
+      sampleRate: 44100,
+      numberOfChannels: 1,
+      bitRate: 128000,
+      linearPCMBitDepth: 16,
+      linearPCMIsBigEndian: false,
+      linearPCMIsFloat: false,
+    },
+    web: {
+      mimeType: "audio/webm",
+      bitsPerSecond: 128000,
+    },
+  } as any);
 
-  // Initialize audio mode
+  // Initialize audio mode and request permissions
   useEffect(() => {
     const initAudio = async () => {
       try {
         await setAudioModeAsync({ playsInSilentMode: true });
+        // Request microphone permission
+        const permission = await AudioModule.requestPermissionsAsync();
+        setPermissionGranted(permission.granted);
       } catch (error) {
         console.error("Failed to set audio mode:", error);
       }
@@ -70,55 +107,98 @@ export default function SpeakingScreen() {
     }
   };
 
-  const handleStartRecording = () => {
-    setRecordingTime(0);
-    setIsRecording(true);
-    if (Platform.OS !== "web") {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  const handleStartRecording = async () => {
+    if (!permissionGranted) {
+      Alert.alert("Permission Denied", "Microphone permission is required to record.");
+      return;
+    }
+
+    try {
+      setRecordingTime(0);
+      setIsRecording(true);
+      setRecordingUri(null);
+      await recorder.record();
+      if (Platform.OS !== "web") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (error) {
+      Alert.alert("Recording Error", "Failed to start recording.");
+      setIsRecording(false);
     }
   };
 
-  const handleStopRecording = () => {
-    setIsRecording(false);
-    if (Platform.OS !== "web") {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  const handleStopRecording = async () => {
+    try {
+      await recorder.stop();
+      setIsRecording(false);
+      // The recorder.uri contains the path to the saved recording
+      if (recorder.uri) {
+        setRecordingUri(recorder.uri);
+      }
+      if (Platform.OS !== "web") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (error) {
+      Alert.alert("Stop Recording Error", "Failed to stop recording.");
     }
   };
 
-  const handleSaveRecording = () => {
-    if (recordingTime === 0) {
+  const handleSaveRecording = async () => {
+    if (recordingTime === 0 || !recordingUri) {
       Alert.alert("No Recording", "Please record something before saving.");
       return;
     }
 
-    dispatch({
-      type: "ADD_RECORDING",
-      payload: {
-        id: Date.now().toString(),
-        topic: currentTopic,
-        duration: recordingTime,
-        uri: `recording_${Date.now()}.m4a`,
-        date: today,
-        createdAt: Date.now(),
-      },
-    });
+    try {
+      // Save recording to app's document directory
+      const fileName = `recording_${Date.now()}.m4a`;
+      const destUri = `${FileSystem.documentDirectory}${fileName}`;
+      await FileSystem.copyAsync({
+        from: recordingUri,
+        to: destUri,
+      });
 
-    setRecordingTime(0);
-    setShowRecordingModal(false);
-    Alert.alert("Saved", `Recording saved! Duration: ${formatDuration(recordingTime)}`);
+      dispatch({
+        type: "ADD_RECORDING",
+        payload: {
+          id: Date.now().toString(),
+          topic: currentTopic,
+          duration: recordingTime,
+          uri: destUri,
+          date: today,
+          createdAt: Date.now(),
+        },
+      });
+
+      setRecordingTime(0);
+      setRecordingUri(null);
+      setShowRecordingModal(false);
+      Alert.alert("Saved", `Recording saved! Duration: ${formatDuration(recordingTime)}`);
+    } catch (error) {
+      Alert.alert("Save Error", "Failed to save recording.");
+    }
   };
 
-  const handleDeleteRecording = (recordingId: string) => {
+  const handleDeleteRecording = async (recordingId: string) => {
     Alert.alert("Delete Recording", "Are you sure you want to delete this recording?", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete",
         style: "destructive",
-        onPress: () => {
-          dispatch({ type: "DELETE_RECORDING", payload: recordingId });
-          setSelectedRecording(null);
-          if (Platform.OS !== "web") {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        onPress: async () => {
+          try {
+            const recording = state.recordings.find((r) => r.id === recordingId);
+            if (recording && recording.uri) {
+              // Delete file from filesystem
+              await FileSystem.deleteAsync(recording.uri, { idempotent: true });
+            }
+            dispatch({ type: "DELETE_RECORDING", payload: recordingId });
+            setSelectedRecording(null);
+            if (Platform.OS !== "web") {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            }
+          } catch (error) {
+            console.error("Error deleting recording:", error);
           }
         },
       },
@@ -134,6 +214,23 @@ export default function SpeakingScreen() {
     () => state.recordings.reduce((sum, r) => sum + r.duration, 0),
     [state.recordings]
   );
+
+  const handlePlayRecording = async (recordingUri: string, recordingId: string) => {
+    try {
+      if (playingRecordingId === recordingId) {
+        setPlayingRecordingId(null);
+        setPlaybackPosition(0);
+      } else {
+        setPlayingRecordingId(recordingId);
+        setPlaybackPosition(0);
+        if (Platform.OS !== "web") {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
+      }
+    } catch (error) {
+      Alert.alert("Playback Error", "Failed to play recording.");
+    }
+  };
 
   if (state.isLoading) {
     return (
@@ -208,12 +305,21 @@ export default function SpeakingScreen() {
 
           {/* Recording Button */}
           <TouchableOpacity
-            onPress={() => setShowRecordingModal(true)}
-            className="bg-primary rounded-full py-6 items-center justify-center"
+            onPress={() => {
+              if (!permissionGranted) {
+                Alert.alert("Permission Required", "Please enable microphone access in settings to record.");
+                return;
+              }
+              setShowRecordingModal(true);
+            }}
+            disabled={!permissionGranted}
+            className={`rounded-full py-6 items-center justify-center ${permissionGranted ? "bg-primary" : "bg-surface opacity-50"}`}
             activeOpacity={0.8}
           >
-            <IconSymbol size={40} name="mic.fill" color="white" />
-            <Text className="text-white font-semibold mt-2">Start Recording</Text>
+            <IconSymbol size={40} name="mic.fill" color={permissionGranted ? "white" : colors.muted} />
+            <Text className={`font-semibold mt-2 ${permissionGranted ? "text-white" : "text-muted"}`}>
+              {permissionGranted ? "Start Recording" : "Microphone Not Allowed"}
+            </Text>
           </TouchableOpacity>
 
           {/* Today's Recordings */}
@@ -352,28 +458,47 @@ export default function SpeakingScreen() {
             data={state.recordings}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
-              <TouchableOpacity
-                onPress={() => setSelectedRecording(item)}
-                activeOpacity={0.7}
-                className="bg-surface rounded-lg p-4 mb-3 border border-border flex-row items-center justify-between"
-              >
-                <View className="flex-1">
-                  <Text className="text-base font-semibold text-foreground">{item.topic}</Text>
-                  <View className="flex-row gap-2 mt-1">
-                    <Text className="text-xs text-muted">{formatDuration(item.duration)}</Text>
-                    <Text className="text-xs text-muted">•</Text>
-                    <Text className="text-xs text-muted">
-                      {new Date(item.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                    </Text>
-                  </View>
-                </View>
+              <View className="bg-surface rounded-lg p-4 mb-3 border border-border">
                 <TouchableOpacity
-                  onPress={() => handleDeleteRecording(item.id)}
-                  className="ml-2"
+                  onPress={() => setSelectedRecording(item)}
+                  activeOpacity={0.7}
+                  className="flex-row items-center justify-between"
                 >
-                  <IconSymbol size={20} name="chevron.right" color={colors.error} />
+                  <View className="flex-1">
+                    <Text className="text-base font-semibold text-foreground">{item.topic}</Text>
+                    <View className="flex-row gap-2 mt-1">
+                      <Text className="text-xs text-muted">{formatDuration(item.duration)}</Text>
+                      <Text className="text-xs text-muted">•</Text>
+                      <Text className="text-xs text-muted">
+                        {new Date(item.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </Text>
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => handleDeleteRecording(item.id)}
+                    className="ml-2"
+                  >
+                    <IconSymbol size={20} name="chevron.right" color={colors.error} />
+                  </TouchableOpacity>
                 </TouchableOpacity>
-              </TouchableOpacity>
+                
+                <View className="flex-row items-center gap-2 mt-3 pt-3 border-t border-border">
+                  <TouchableOpacity
+                    onPress={() => handlePlayRecording(item.uri, item.id)}
+                    className="flex-1 flex-row items-center justify-center gap-2 bg-primary/10 rounded-lg py-2"
+                    activeOpacity={0.7}
+                  >
+                    <IconSymbol
+                      size={16}
+                      name={playingRecordingId === item.id ? "pause.fill" : "play.fill"}
+                      color={colors.primary}
+                    />
+                    <Text className="text-sm font-medium text-primary">
+                      {playingRecordingId === item.id ? "Playing" : "Play"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
             )}
             scrollEnabled={true}
             ListEmptyComponent={

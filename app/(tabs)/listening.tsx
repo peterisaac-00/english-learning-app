@@ -16,6 +16,7 @@ import { useState, useMemo } from "react";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import * as Haptics from "expo-haptics";
 import { Platform } from "react-native";
+import * as WebBrowser from "expo-web-browser";
 
 export default function ListeningScreen() {
   const { state, dispatch } = useLearning();
@@ -109,6 +110,26 @@ export default function ListeningScreen() {
     });
 
     Alert.alert("Saved", "Summary has been saved!");
+  };
+
+  const handleOpenLink = async (url: string) => {
+    try {
+      // Check if it's a valid URL
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        Alert.alert("Invalid Link", "Please enter a valid URL starting with http:// or https://");
+        return;
+      }
+
+      if (Platform.OS === "web") {
+        // On web, open in new tab
+        window.open(url, "_blank");
+      } else {
+        // On native, use WebBrowser
+        await WebBrowser.openBrowserAsync(url);
+      }
+    } catch (error) {
+      Alert.alert("Error", "Failed to open link. Please check the URL.");
+    }
   };
 
   const handleDeleteListening = (itemId: string) => {
@@ -205,7 +226,13 @@ export default function ListeningScreen() {
                     />
                   </View>
 
-                  <Text className="text-xs text-muted line-clamp-1">{item.source}</Text>
+                  {item.source.startsWith('http://') || item.source.startsWith('https://') ? (
+                    <TouchableOpacity onPress={() => handleOpenLink(item.source)} activeOpacity={0.7}>
+                      <Text className="text-xs text-primary underline line-clamp-1">{item.source}</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <Text className="text-xs text-muted line-clamp-1">{item.source}</Text>
+                  )}
                   {item.summary && (
                     <Text className="text-xs text-primary mt-2">✓ Summary added</Text>
                   )}
@@ -325,7 +352,13 @@ export default function ListeningScreen() {
             <View className="gap-4">
               <View>
                 <Text className="text-base font-semibold text-foreground mb-2">{selectedItem?.title}</Text>
-                <Text className="text-sm text-muted">{selectedItem?.source}</Text>
+                {selectedItem?.source.startsWith('http://') || selectedItem?.source.startsWith('https://') ? (
+                  <TouchableOpacity onPress={() => handleOpenLink(selectedItem?.source)} activeOpacity={0.7}>
+                    <Text className="text-sm text-primary underline">{selectedItem?.source}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text className="text-sm text-muted">{selectedItem?.source}</Text>
+                )}
               </View>
 
               <View>

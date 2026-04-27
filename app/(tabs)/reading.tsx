@@ -16,6 +16,7 @@ import { useState, useMemo } from "react";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import * as Haptics from "expo-haptics";
 import { Platform } from "react-native";
+import * as WebBrowser from "expo-web-browser";
 
 export default function ReadingScreen() {
   const { state, dispatch } = useLearning();
@@ -82,6 +83,26 @@ export default function ReadingScreen() {
 
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  };
+
+  const handleOpenLink = async (url: string) => {
+    try {
+      // Check if it's a valid URL
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        Alert.alert("Invalid Link", "Please enter a valid URL starting with http:// or https://");
+        return;
+      }
+
+      if (Platform.OS === "web") {
+        // On web, open in new tab
+        window.open(url, "_blank");
+      } else {
+        // On native, use WebBrowser
+        await WebBrowser.openBrowserAsync(url);
+      }
+    } catch (error) {
+      Alert.alert("Error", "Failed to open link. Please check the URL.");
     }
   };
 
@@ -178,7 +199,13 @@ export default function ReadingScreen() {
                     />
                   </View>
 
-                  <Text className="text-xs text-muted line-clamp-2">{item.content}</Text>
+                  {item.content.startsWith('http://') || item.content.startsWith('https://') ? (
+                    <TouchableOpacity onPress={() => handleOpenLink(item.content)} activeOpacity={0.7}>
+                      <Text className="text-xs text-primary underline line-clamp-2">{item.content}</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <Text className="text-xs text-muted line-clamp-2">{item.content}</Text>
+                  )}
                 </TouchableOpacity>
               ))
             ) : (
@@ -298,7 +325,13 @@ export default function ReadingScreen() {
             <View className="gap-4">
               <View>
                 <Text className="text-base font-semibold text-foreground mb-2">{selectedItem?.title}</Text>
-                <Text className="text-sm text-muted">{selectedItem?.content}</Text>
+                {selectedItem?.content.startsWith('http://') || selectedItem?.content.startsWith('https://') ? (
+                  <TouchableOpacity onPress={() => handleOpenLink(selectedItem?.content)} activeOpacity={0.7}>
+                    <Text className="text-sm text-primary underline">{selectedItem?.content}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text className="text-sm text-muted">{selectedItem?.content}</Text>
+                )}
               </View>
 
               <View>
