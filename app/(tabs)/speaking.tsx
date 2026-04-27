@@ -34,43 +34,79 @@ export default function SpeakingScreen() {
   const [recordingUri, setRecordingUri] = useState<string | null>(null);
   const [playingRecordingId, setPlayingRecordingId] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [debugMessage, setDebugMessage] = useState<string>("");
 
   const today = new Date().toISOString().split("T")[0];
   const recorderRef = useRef<any>(null);
 
-  // Safe initialization: Check permissions without initializing recorder yet
+  // Helper function to log debug messages
+  const addDebugLog = (message: string) => {
+    console.log(`[Speaking Debug] ${message}`);
+    setDebugMessage((prev) => `${prev}\n${message}`.slice(-500)); // Keep last 500 chars
+  };
+
+  // Safe initialization: Check and request permissions properly
   useEffect(() => {
     const initializeAudio = async () => {
       try {
         setIsInitializing(true);
-        
+        addDebugLog("Starting audio initialization...");
+
         // Step 1: Set audio mode
         try {
+          addDebugLog("Setting audio mode...");
           await setAudioModeAsync({ playsInSilentMode: true });
+          addDebugLog("✓ Audio mode set successfully");
         } catch (error) {
-          console.warn("Could not set audio mode:", error);
+          addDebugLog(`⚠ Audio mode setup warning: ${error}`);
         }
 
-        // Step 2: Check microphone permission
+        // Step 2: Check current permission status FIRST
         try {
+          addDebugLog("Checking current permission status...");
+          const currentStatus = await AudioModule.getPermissionsAsync();
+          addDebugLog(`Current permission status: ${JSON.stringify(currentStatus)}`);
+
+          if (currentStatus.granted) {
+            addDebugLog("✓ Permission already granted");
+            setPermissionGranted(true);
+            setPermissionError(null);
+            setIsInitializing(false);
+            return;
+          }
+
+          // If not granted, request permission
+          addDebugLog("Permission not granted, requesting...");
           const permission = await AudioModule.requestPermissionsAsync();
-          setPermissionGranted(permission.granted);
-          
-          if (!permission.granted) {
-            setPermissionError("Microphone permission is required to record audio.");
+          addDebugLog(`Permission request result: ${JSON.stringify(permission)}`);
+
+          if (permission.granted) {
+            addDebugLog("✓ Permission granted by user");
+            setPermissionGranted(true);
+            setPermissionError(null);
+          } else {
+            addDebugLog("✗ Permission denied by user");
+            setPermissionGranted(false);
+            setPermissionError(
+              "Microphone permission is required to record audio. Please enable it in Settings > Apps > English Learning > Permissions > Microphone."
+            );
           }
         } catch (error) {
+          addDebugLog(`✗ Permission error: ${error}`);
           console.error("Permission request failed:", error);
           setPermissionGranted(false);
-          setPermissionError("Could not request microphone permission. Please enable it in settings.");
+          setPermissionError(
+            `Permission error: ${error instanceof Error ? error.message : "Unknown error"}. Try enabling microphone in device settings.`
+          );
         }
 
         setIsInitializing(false);
       } catch (error) {
+        addDebugLog(`✗ Audio initialization error: ${error}`);
         console.error("Audio initialization error:", error);
         setIsInitializing(false);
         setPermissionGranted(false);
-        setPermissionError("Failed to initialize audio system.");
+        setPermissionError(`Initialization error: ${error instanceof Error ? error.message : "Unknown error"}`);
       }
     };
 
@@ -81,8 +117,11 @@ export default function SpeakingScreen() {
   const initializeRecorder = async () => {
     try {
       if (recorderRef.current) {
+        addDebugLog("Recorder already initialized");
         return recorderRef.current;
       }
+
+      addDebugLog("Initializing audio recorder...");
 
       const recorder = useAudioRecorder({
         extension: ".m4a",
@@ -114,8 +153,10 @@ export default function SpeakingScreen() {
       } as any);
 
       recorderRef.current = recorder;
+      addDebugLog("✓ Recorder initialized successfully");
       return recorder;
     } catch (error) {
+      addDebugLog(`✗ Recorder initialization failed: ${error}`);
       console.error("Failed to initialize recorder:", error);
       throw error;
     }
@@ -152,7 +193,8 @@ export default function SpeakingScreen() {
   };
 
   const handleStartRecording = async () => {
-    if (!permissionGranted) {
+    if (permissionGranted !== true) {
+      addDebugLog(`Cannot start recording: permission=${permissionGranted}`);
       Alert.alert(
         "Permission Required",
         permissionError || "Microphone permission is required to record audio."
@@ -161,13 +203,15 @@ export default function SpeakingScreen() {
     }
 
     try {
+      addDebugLog("Starting recording...");
       const recorder = await initializeRecorder();
       setRecordingTime(0);
       setIsRecording(true);
       setRecordingUri(null);
-      
+
       await recorder.record();
-      
+      addDebugLog("✓ Recording started");
+
       if (Platform.OS !== "web") {
         try {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -176,27 +220,31 @@ export default function SpeakingScreen() {
         }
       }
     } catch (error) {
+      addDebugLog(`✗ Recording start error: ${error}`);
       console.error("Recording start error:", error);
       setIsRecording(false);
-      Alert.alert("Recording Error", "Failed to start recording. Please try again.");
+      Alert.alert("Recording Error", `Failed to start recording: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   };
 
   const handleStopRecording = async () => {
     try {
       if (!recorderRef.current) {
-        console.warn("Recorder not initialized");
+        addDebugLog("⚠ Recorder not initialized when stopping");
         setIsRecording(false);
         return;
       }
 
+      addDebugLog("Stopping recording...");
       await recorderRef.current.stop();
       setIsRecording(false);
 
-      // Get the recording URI from the recorder
       const uri = recorderRef.current.uri;
       if (uri) {
         setRecordingUri(uri);
+        addDebugLog(`✓ Recording stopped, URI: ${uri}`);
+      } else {
+        addDebugLog("⚠ Recording stopped but no URI returned");
       }
 
       if (Platform.OS !== "web") {
@@ -207,27 +255,31 @@ export default function SpeakingScreen() {
         }
       }
     } catch (error) {
+      addDebugLog(`✗ Stop recording error: ${error}`);
       console.error("Stop recording error:", error);
       setIsRecording(false);
-      Alert.alert("Stop Recording Error", "Failed to stop recording. Please try again.");
+      Alert.alert("Stop Recording Error", `Failed to stop recording: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   };
 
   const handleSaveRecording = async () => {
     if (recordingTime === 0 || !recordingUri) {
+      addDebugLog("Cannot save: no recording data");
       Alert.alert("No Recording", "Please record something before saving.");
       return;
     }
 
     try {
-      // Save recording to app's document directory
+      addDebugLog("Saving recording...");
       const fileName = `recording_${Date.now()}.m4a`;
       const destUri = `${FileSystem.documentDirectory}${fileName}`;
-      
+
       await FileSystem.copyAsync({
         from: recordingUri,
         to: destUri,
       });
+
+      addDebugLog(`✓ Recording saved to ${destUri}`);
 
       dispatch({
         type: "ADD_RECORDING",
@@ -246,8 +298,9 @@ export default function SpeakingScreen() {
       setShowRecordingModal(false);
       Alert.alert("Saved", `Recording saved! Duration: ${formatDuration(recordingTime)}`);
     } catch (error) {
+      addDebugLog(`✗ Save recording error: ${error}`);
       console.error("Save recording error:", error);
-      Alert.alert("Save Error", "Failed to save recording. Please try again.");
+      Alert.alert("Save Error", `Failed to save recording: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   };
 
@@ -259,10 +312,11 @@ export default function SpeakingScreen() {
         style: "destructive",
         onPress: async () => {
           try {
+            addDebugLog(`Deleting recording ${recordingId}...`);
             const recording = state.recordings.find((r) => r.id === recordingId);
             if (recording && recording.uri) {
-              // Delete file from filesystem
               await FileSystem.deleteAsync(recording.uri, { idempotent: true });
+              addDebugLog(`✓ Recording file deleted`);
             }
             dispatch({ type: "DELETE_RECORDING", payload: recordingId });
             setSelectedRecording(null);
@@ -274,8 +328,9 @@ export default function SpeakingScreen() {
               }
             }
           } catch (error) {
+            addDebugLog(`✗ Error deleting recording: ${error}`);
             console.error("Error deleting recording:", error);
-            Alert.alert("Delete Error", "Failed to delete recording.");
+            Alert.alert("Delete Error", `Failed to delete recording: ${error instanceof Error ? error.message : "Unknown error"}`);
           }
         },
       },
@@ -285,8 +340,10 @@ export default function SpeakingScreen() {
   const handlePlayRecording = async (recordingUri: string, recordingId: string) => {
     try {
       if (playingRecordingId === recordingId) {
+        addDebugLog("Stopping playback");
         setPlayingRecordingId(null);
       } else {
+        addDebugLog(`Starting playback of ${recordingId}`);
         setPlayingRecordingId(recordingId);
         if (Platform.OS !== "web") {
           try {
@@ -297,8 +354,9 @@ export default function SpeakingScreen() {
         }
       }
     } catch (error) {
+      addDebugLog(`✗ Playback error: ${error}`);
       console.error("Playback error:", error);
-      Alert.alert("Playback Error", "Failed to play recording.");
+      Alert.alert("Playback Error", `Failed to play recording: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   };
 
@@ -315,9 +373,14 @@ export default function SpeakingScreen() {
   // Show loading while initializing
   if (isInitializing) {
     return (
-      <ScreenContainer className="items-center justify-center">
+      <ScreenContainer className="items-center justify-center p-6">
         <ActivityIndicator size="large" color={colors.primary} />
         <Text className="text-muted mt-4">Initializing audio...</Text>
+        {debugMessage && (
+          <View className="mt-6 bg-surface rounded-lg p-4 w-full max-h-32">
+            <Text className="text-xs text-muted font-mono">{debugMessage}</Text>
+          </View>
+        )}
       </ScreenContainer>
     );
   }
@@ -331,29 +394,58 @@ export default function SpeakingScreen() {
           <Text className="text-2xl font-bold text-foreground text-center">
             Microphone Access Required
           </Text>
-          <Text className="text-muted text-center">
-            {permissionError || "The Speaking feature requires microphone access. Please enable it in your device settings."}
+          <Text className="text-muted text-center text-sm">
+            {permissionError || "The Speaking feature requires microphone access."}
           </Text>
-          <TouchableOpacity
-            onPress={() => {
-              // Attempt to re-request permission
-              const reinit = async () => {
-                try {
-                  const permission = await AudioModule.requestPermissionsAsync();
-                  setPermissionGranted(permission.granted);
-                  if (!permission.granted) {
-                    setPermissionError("Microphone permission was denied.");
+
+          {/* Debug info */}
+          {debugMessage && (
+            <View className="mt-4 bg-surface rounded-lg p-3 w-full border border-border">
+              <Text className="text-xs font-semibold text-foreground mb-2">Debug Info:</Text>
+              <Text className="text-xs text-muted font-mono">{debugMessage}</Text>
+            </View>
+          )}
+
+          <View className="gap-2 w-full mt-4">
+            <TouchableOpacity
+              onPress={() => {
+                addDebugLog("User tapped 'Try Again'");
+                const reinit = async () => {
+                  try {
+                    addDebugLog("Re-requesting permission...");
+                    const permission = await AudioModule.requestPermissionsAsync();
+                    addDebugLog(`Re-request result: ${JSON.stringify(permission)}`);
+                    setPermissionGranted(permission.granted);
+                    if (!permission.granted) {
+                      setPermissionError("Microphone permission was denied. Please enable it in Settings.");
+                    } else {
+                      setPermissionError(null);
+                    }
+                  } catch (error) {
+                    addDebugLog(`Re-request error: ${error}`);
+                    console.error("Re-request permission error:", error);
                   }
-                } catch (error) {
-                  console.error("Re-request permission error:", error);
-                }
-              };
-              reinit();
-            }}
-            className="bg-primary rounded-lg px-6 py-3 mt-4"
-          >
-            <Text className="text-white font-semibold">Try Again</Text>
-          </TouchableOpacity>
+                };
+                reinit();
+              }}
+              className="bg-primary rounded-lg px-6 py-3"
+            >
+              <Text className="text-white font-semibold text-center">Try Again</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => {
+                Alert.alert(
+                  "Enable Microphone Permission",
+                  "Go to Settings > Apps > English Learning > Permissions > Microphone and select 'Allow'",
+                  [{ text: "OK" }]
+                );
+              }}
+              className="border border-border rounded-lg px-6 py-3"
+            >
+              <Text className="text-foreground font-semibold text-center">Open Settings Guide</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </ScreenContainer>
     );
@@ -424,7 +516,10 @@ export default function SpeakingScreen() {
 
           {/* Recording Button */}
           <TouchableOpacity
-            onPress={() => setShowRecordingModal(true)}
+            onPress={() => {
+              addDebugLog("User tapped 'Start Recording'");
+              setShowRecordingModal(true);
+            }}
             disabled={!permissionGranted}
             className={`rounded-full py-6 items-center justify-center ${
               permissionGranted ? "bg-primary" : "bg-surface opacity-50"
