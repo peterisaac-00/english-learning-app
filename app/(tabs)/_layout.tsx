@@ -35,48 +35,6 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
         }}
       />
-      <Tabs.Screen
-        name="reading"
-        options={{
-          title: "Reading",
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="book.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="writing"
-        options={{
-          title: "Writing",
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="pencil" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="listening"
-        options={{
-          title: "Listening",
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="headphones" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="speaking"
-        options={{
-          title: "Speaking",
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="mic.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="progress"
-        options={{
-          title: "Progress",
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="chart.bar.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="settings"
-        options={{
-          title: "Settings",
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="gearshape.fill" color={color} />,
-        }}
-      />
     </Tabs>
   );
 }
