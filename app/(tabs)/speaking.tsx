@@ -11,12 +11,12 @@ import {
 import { ScreenContainer } from "@/components/screen-container";
 import { useLearning } from "@/lib/learning-context";
 import { useColors } from "@/hooks/use-colors";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import * as Haptics from "expo-haptics";
 import { Platform } from "react-native";
 import { getRandomTopic, formatDuration } from "@/lib/speaking-topics";
-import { useAudioPlayer, setAudioModeAsync, useAudioRecorder, AudioModule, useAudioPlayerStatus } from "expo-audio";
+import { setAudioModeAsync, useAudioRecorder, AudioModule } from "expo-audio";
 import * as FileSystem from "expo-file-system/legacy";
 
 export default function SpeakingScreen() {
@@ -29,57 +29,97 @@ export default function SpeakingScreen() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [selectedRecording, setSelectedRecording] = useState<any>(null);
-  const [isPlayingRecording, setIsPlayingRecording] = useState(false);
-  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [permissionGranted, setPermissionGranted] = useState<boolean | null>(null);
+  const [permissionError, setPermissionError] = useState<string | null>(null);
   const [recordingUri, setRecordingUri] = useState<string | null>(null);
   const [playingRecordingId, setPlayingRecordingId] = useState<string | null>(null);
-  const [playbackPosition, setPlaybackPosition] = useState(0);
-  const [playbackDuration, setPlaybackDuration] = useState(0);
+  const [isInitializing, setIsInitializing] = useState(true);
 
   const today = new Date().toISOString().split("T")[0];
-  const recorder = useAudioRecorder({
-    extension: ".m4a",
-    sampleRate: 44100,
-    numberOfChannels: 1,
-    bitRate: 128000,
-    android: {
-      extension: ".m4a",
-      outputFormat: 2,
-      audioEncoder: 3,
-      sampleRate: 44100,
-      numberOfChannels: 1,
-      bitRate: 128000,
-    },
-    ios: {
-      extension: ".m4a",
-      audioQuality: 96,
-      sampleRate: 44100,
-      numberOfChannels: 1,
-      bitRate: 128000,
-      linearPCMBitDepth: 16,
-      linearPCMIsBigEndian: false,
-      linearPCMIsFloat: false,
-    },
-    web: {
-      mimeType: "audio/webm",
-      bitsPerSecond: 128000,
-    },
-  } as any);
+  const recorderRef = useRef<any>(null);
 
-  // Initialize audio mode and request permissions
+  // Safe initialization: Check permissions without initializing recorder yet
   useEffect(() => {
-    const initAudio = async () => {
+    const initializeAudio = async () => {
       try {
-        await setAudioModeAsync({ playsInSilentMode: true });
-        // Request microphone permission
-        const permission = await AudioModule.requestPermissionsAsync();
-        setPermissionGranted(permission.granted);
+        setIsInitializing(true);
+        
+        // Step 1: Set audio mode
+        try {
+          await setAudioModeAsync({ playsInSilentMode: true });
+        } catch (error) {
+          console.warn("Could not set audio mode:", error);
+        }
+
+        // Step 2: Check microphone permission
+        try {
+          const permission = await AudioModule.requestPermissionsAsync();
+          setPermissionGranted(permission.granted);
+          
+          if (!permission.granted) {
+            setPermissionError("Microphone permission is required to record audio.");
+          }
+        } catch (error) {
+          console.error("Permission request failed:", error);
+          setPermissionGranted(false);
+          setPermissionError("Could not request microphone permission. Please enable it in settings.");
+        }
+
+        setIsInitializing(false);
       } catch (error) {
-        console.error("Failed to set audio mode:", error);
+        console.error("Audio initialization error:", error);
+        setIsInitializing(false);
+        setPermissionGranted(false);
+        setPermissionError("Failed to initialize audio system.");
       }
     };
-    initAudio();
+
+    initializeAudio();
   }, []);
+
+  // Initialize recorder only when needed (lazy initialization)
+  const initializeRecorder = async () => {
+    try {
+      if (recorderRef.current) {
+        return recorderRef.current;
+      }
+
+      const recorder = useAudioRecorder({
+        extension: ".m4a",
+        sampleRate: 44100,
+        numberOfChannels: 1,
+        bitRate: 128000,
+        android: {
+          extension: ".m4a",
+          outputFormat: 2,
+          audioEncoder: 3,
+          sampleRate: 44100,
+          numberOfChannels: 1,
+          bitRate: 128000,
+        },
+        ios: {
+          extension: ".m4a",
+          audioQuality: 96,
+          sampleRate: 44100,
+          numberOfChannels: 1,
+          bitRate: 128000,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+        },
+        web: {
+          mimeType: "audio/webm",
+          bitsPerSecond: 128000,
+        },
+      } as any);
+
+      recorderRef.current = recorder;
+      return recorder;
+    } catch (error) {
+      console.error("Failed to initialize recorder:", error);
+      throw error;
+    }
+  };
 
   // Generate initial topic
   useEffect(() => {
@@ -103,43 +143,73 @@ export default function SpeakingScreen() {
     const newTopic = getRandomTopic(state.currentDifficulty);
     setCurrentTopic(newTopic);
     if (Platform.OS !== "web") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      try {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      } catch (error) {
+        console.warn("Haptics not available:", error);
+      }
     }
   };
 
   const handleStartRecording = async () => {
     if (!permissionGranted) {
-      Alert.alert("Permission Denied", "Microphone permission is required to record.");
+      Alert.alert(
+        "Permission Required",
+        permissionError || "Microphone permission is required to record audio."
+      );
       return;
     }
 
     try {
+      const recorder = await initializeRecorder();
       setRecordingTime(0);
       setIsRecording(true);
       setRecordingUri(null);
+      
       await recorder.record();
+      
       if (Platform.OS !== "web") {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        try {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch (error) {
+          console.warn("Haptics not available:", error);
+        }
       }
     } catch (error) {
-      Alert.alert("Recording Error", "Failed to start recording.");
+      console.error("Recording start error:", error);
       setIsRecording(false);
+      Alert.alert("Recording Error", "Failed to start recording. Please try again.");
     }
   };
 
   const handleStopRecording = async () => {
     try {
-      await recorder.stop();
-      setIsRecording(false);
-      // The recorder.uri contains the path to the saved recording
-      if (recorder.uri) {
-        setRecordingUri(recorder.uri);
+      if (!recorderRef.current) {
+        console.warn("Recorder not initialized");
+        setIsRecording(false);
+        return;
       }
+
+      await recorderRef.current.stop();
+      setIsRecording(false);
+
+      // Get the recording URI from the recorder
+      const uri = recorderRef.current.uri;
+      if (uri) {
+        setRecordingUri(uri);
+      }
+
       if (Platform.OS !== "web") {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        try {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch (error) {
+          console.warn("Haptics not available:", error);
+        }
       }
     } catch (error) {
-      Alert.alert("Stop Recording Error", "Failed to stop recording.");
+      console.error("Stop recording error:", error);
+      setIsRecording(false);
+      Alert.alert("Stop Recording Error", "Failed to stop recording. Please try again.");
     }
   };
 
@@ -153,6 +223,7 @@ export default function SpeakingScreen() {
       // Save recording to app's document directory
       const fileName = `recording_${Date.now()}.m4a`;
       const destUri = `${FileSystem.documentDirectory}${fileName}`;
+      
       await FileSystem.copyAsync({
         from: recordingUri,
         to: destUri,
@@ -175,7 +246,8 @@ export default function SpeakingScreen() {
       setShowRecordingModal(false);
       Alert.alert("Saved", `Recording saved! Duration: ${formatDuration(recordingTime)}`);
     } catch (error) {
-      Alert.alert("Save Error", "Failed to save recording.");
+      console.error("Save recording error:", error);
+      Alert.alert("Save Error", "Failed to save recording. Please try again.");
     }
   };
 
@@ -195,14 +267,39 @@ export default function SpeakingScreen() {
             dispatch({ type: "DELETE_RECORDING", payload: recordingId });
             setSelectedRecording(null);
             if (Platform.OS !== "web") {
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+              try {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+              } catch (error) {
+                console.warn("Haptics not available:", error);
+              }
             }
           } catch (error) {
             console.error("Error deleting recording:", error);
+            Alert.alert("Delete Error", "Failed to delete recording.");
           }
         },
       },
     ]);
+  };
+
+  const handlePlayRecording = async (recordingUri: string, recordingId: string) => {
+    try {
+      if (playingRecordingId === recordingId) {
+        setPlayingRecordingId(null);
+      } else {
+        setPlayingRecordingId(recordingId);
+        if (Platform.OS !== "web") {
+          try {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          } catch (error) {
+            console.warn("Haptics not available:", error);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Playback error:", error);
+      Alert.alert("Playback Error", "Failed to play recording.");
+    }
   };
 
   const todayRecordings = useMemo(
@@ -215,27 +312,49 @@ export default function SpeakingScreen() {
     [state.recordings]
   );
 
-  const handlePlayRecording = async (recordingUri: string, recordingId: string) => {
-    try {
-      if (playingRecordingId === recordingId) {
-        setPlayingRecordingId(null);
-        setPlaybackPosition(0);
-      } else {
-        setPlayingRecordingId(recordingId);
-        setPlaybackPosition(0);
-        if (Platform.OS !== "web") {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        }
-      }
-    } catch (error) {
-      Alert.alert("Playback Error", "Failed to play recording.");
-    }
-  };
-
-  if (state.isLoading) {
+  // Show loading while initializing
+  if (isInitializing) {
     return (
       <ScreenContainer className="items-center justify-center">
         <ActivityIndicator size="large" color={colors.primary} />
+        <Text className="text-muted mt-4">Initializing audio...</Text>
+      </ScreenContainer>
+    );
+  }
+
+  // Show permission error if not granted
+  if (permissionGranted === false) {
+    return (
+      <ScreenContainer className="p-6 items-center justify-center">
+        <View className="gap-4 items-center">
+          <IconSymbol size={64} name="mic.slash.fill" color={colors.error} />
+          <Text className="text-2xl font-bold text-foreground text-center">
+            Microphone Access Required
+          </Text>
+          <Text className="text-muted text-center">
+            {permissionError || "The Speaking feature requires microphone access. Please enable it in your device settings."}
+          </Text>
+          <TouchableOpacity
+            onPress={() => {
+              // Attempt to re-request permission
+              const reinit = async () => {
+                try {
+                  const permission = await AudioModule.requestPermissionsAsync();
+                  setPermissionGranted(permission.granted);
+                  if (!permission.granted) {
+                    setPermissionError("Microphone permission was denied.");
+                  }
+                } catch (error) {
+                  console.error("Re-request permission error:", error);
+                }
+              };
+              reinit();
+            }}
+            className="bg-primary rounded-lg px-6 py-3 mt-4"
+          >
+            <Text className="text-white font-semibold">Try Again</Text>
+          </TouchableOpacity>
+        </View>
       </ScreenContainer>
     );
   }
@@ -305,19 +424,23 @@ export default function SpeakingScreen() {
 
           {/* Recording Button */}
           <TouchableOpacity
-            onPress={() => {
-              if (!permissionGranted) {
-                Alert.alert("Permission Required", "Please enable microphone access in settings to record.");
-                return;
-              }
-              setShowRecordingModal(true);
-            }}
+            onPress={() => setShowRecordingModal(true)}
             disabled={!permissionGranted}
-            className={`rounded-full py-6 items-center justify-center ${permissionGranted ? "bg-primary" : "bg-surface opacity-50"}`}
+            className={`rounded-full py-6 items-center justify-center ${
+              permissionGranted ? "bg-primary" : "bg-surface opacity-50"
+            }`}
             activeOpacity={0.8}
           >
-            <IconSymbol size={40} name="mic.fill" color={permissionGranted ? "white" : colors.muted} />
-            <Text className={`font-semibold mt-2 ${permissionGranted ? "text-white" : "text-muted"}`}>
+            <IconSymbol
+              size={40}
+              name="mic.fill"
+              color={permissionGranted ? "white" : colors.muted}
+            />
+            <Text
+              className={`font-semibold mt-2 ${
+                permissionGranted ? "text-white" : "text-muted"
+              }`}
+            >
               {permissionGranted ? "Start Recording" : "Microphone Not Allowed"}
             </Text>
           </TouchableOpacity>
@@ -470,7 +593,10 @@ export default function SpeakingScreen() {
                       <Text className="text-xs text-muted">{formatDuration(item.duration)}</Text>
                       <Text className="text-xs text-muted">•</Text>
                       <Text className="text-xs text-muted">
-                        {new Date(item.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        {new Date(item.date).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                        })}
                       </Text>
                     </View>
                   </View>
@@ -481,7 +607,7 @@ export default function SpeakingScreen() {
                     <IconSymbol size={20} name="chevron.right" color={colors.error} />
                   </TouchableOpacity>
                 </TouchableOpacity>
-                
+
                 <View className="flex-row items-center gap-2 mt-3 pt-3 border-t border-border">
                   <TouchableOpacity
                     onPress={() => handlePlayRecording(item.uri, item.id)}
