@@ -23,6 +23,36 @@ export default function SpeakingScreen() {
   const { state, dispatch } = useLearning();
   const colors = useColors();
 
+  // Initialize audio recorder at component top level (CORRECT HOOK USAGE)
+  const recorder = useAudioRecorder({
+    extension: ".m4a",
+    sampleRate: 44100,
+    numberOfChannels: 1,
+    bitRate: 128000,
+    android: {
+      extension: ".m4a",
+      outputFormat: 2,
+      audioEncoder: 3,
+      sampleRate: 44100,
+      numberOfChannels: 1,
+      bitRate: 128000,
+    },
+    ios: {
+      extension: ".m4a",
+      audioQuality: 96,
+      sampleRate: 44100,
+      numberOfChannels: 1,
+      bitRate: 128000,
+      linearPCMBitDepth: 16,
+      linearPCMIsBigEndian: false,
+      linearPCMIsFloat: false,
+    },
+    web: {
+      mimeType: "audio/webm",
+      bitsPerSecond: 128000,
+    },
+  } as any);
+
   const [currentTopic, setCurrentTopic] = useState("");
   const [showRecordingModal, setShowRecordingModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
@@ -37,7 +67,6 @@ export default function SpeakingScreen() {
   const [debugMessage, setDebugMessage] = useState<string>("");
 
   const today = new Date().toISOString().split("T")[0];
-  const recorderRef = useRef<any>(null);
 
   // Helper function to log debug messages
   const addDebugLog = (message: string) => {
@@ -100,33 +129,6 @@ export default function SpeakingScreen() {
     initializeAudio();
   }, []);
 
-  // Initialize recorder only when needed (lazy initialization)
-  const initializeRecorder = async () => {
-    try {
-      if (recorderRef.current) {
-        addDebugLog("Recorder already initialized");
-        return recorderRef.current;
-      }
-
-      addDebugLog("Initializing audio recorder...");
-
-      const recorder = useAudioRecorder({
-        extension: ".m4a",
-        sampleRate: 44100,
-        numberOfChannels: 1,
-        bitRate: 128000,
-      } as any);
-
-      recorderRef.current = recorder;
-      addDebugLog("✓ Recorder initialized successfully");
-      return recorder;
-    } catch (error) {
-      addDebugLog(`✗ Recorder initialization failed: ${error}`);
-      console.error("Failed to initialize recorder:", error);
-      throw error;
-    }
-  };
-
   // Generate initial topic
   useEffect(() => {
     setCurrentTopic(getRandomTopic(state.currentDifficulty));
@@ -160,7 +162,13 @@ export default function SpeakingScreen() {
   const handleStartRecording = async () => {
     try {
       addDebugLog("Starting recording...");
-      const recorder = await initializeRecorder();
+      
+      if (!recorder) {
+        addDebugLog("✗ Recorder not available");
+        Alert.alert("Recording Error", "Audio recorder is not available");
+        return;
+      }
+
       setRecordingTime(0);
       setIsRecording(true);
       setRecordingUri(null);
@@ -185,17 +193,17 @@ export default function SpeakingScreen() {
 
   const handleStopRecording = async () => {
     try {
-      if (!recorderRef.current) {
-        addDebugLog("⚠ Recorder not initialized when stopping");
+      if (!recorder) {
+        addDebugLog("⚠ Recorder not available when stopping");
         setIsRecording(false);
         return;
       }
 
       addDebugLog("Stopping recording...");
-      await recorderRef.current.stop();
+      await recorder.stop();
       setIsRecording(false);
 
-      const uri = recorderRef.current.uri;
+      const uri = recorder.uri;
       if (uri) {
         setRecordingUri(uri);
         addDebugLog(`✓ Recording stopped, URI: ${uri}`);
