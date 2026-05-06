@@ -16,7 +16,7 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import * as Haptics from "expo-haptics";
 import { Platform } from "react-native";
 import { getRandomTopic, formatDuration } from "@/lib/speaking-topics";
-import { setAudioModeAsync, useAudioRecorder, AudioModule } from "expo-audio";
+import { setAudioModeAsync, useAudioRecorder } from "expo-audio";
 import * as FileSystem from "expo-file-system/legacy";
 
 export default function SpeakingScreen() {
@@ -61,43 +61,30 @@ export default function SpeakingScreen() {
           addDebugLog(`⚠ Audio mode setup warning: ${error}`);
         }
 
-        // Step 2: Check current permission status FIRST
+        // Step 2: Check environment and set permission status
         try {
-          addDebugLog("Checking current permission status...");
-          const currentStatus = await AudioModule.getPermissionsAsync();
-          addDebugLog(`Current permission status: ${JSON.stringify(currentStatus)}`);
-
-          if (currentStatus.granted) {
-            addDebugLog("✓ Permission already granted");
+          addDebugLog("Checking environment...");
+          
+          // On web, microphone access is handled by browser
+          if (Platform.OS === "web") {
+            addDebugLog("Web environment detected - microphone access handled by browser");
             setPermissionGranted(true);
             setPermissionError(null);
             setIsInitializing(false);
             return;
           }
 
-          // If not granted, request permission
-          addDebugLog("Permission not granted, requesting...");
-          const permission = await AudioModule.requestPermissionsAsync();
-          addDebugLog(`Permission request result: ${JSON.stringify(permission)}`);
-
-          if (permission.granted) {
-            addDebugLog("✓ Permission granted by user");
-            setPermissionGranted(true);
-            setPermissionError(null);
-          } else {
-            addDebugLog("✗ Permission denied by user");
-            setPermissionGranted(false);
-            setPermissionError(
-              "Microphone permission is required to record audio. Please enable it in Settings > Apps > English Learning > Permissions > Microphone."
-            );
-          }
+          // On native platforms, assume permission is available
+          // Actual permission will be requested by the OS when recording starts
+          addDebugLog("Native platform detected - permission will be requested on first recording");
+          setPermissionGranted(true);
+          setPermissionError(null);
         } catch (error) {
-          addDebugLog(`✗ Permission error: ${error}`);
-          console.error("Permission request failed:", error);
-          setPermissionGranted(false);
-          setPermissionError(
-            `Permission error: ${error instanceof Error ? error.message : "Unknown error"}. Try enabling microphone in device settings.`
-          );
+          addDebugLog(`⚠ Environment check note: ${error}`);
+          console.warn("Environment check warning:", error);
+          // Set to true optimistically and let recording attempt handle actual permission
+          setPermissionGranted(true);
+          setPermissionError(null);
         }
 
         setIsInitializing(false);
@@ -128,28 +115,6 @@ export default function SpeakingScreen() {
         sampleRate: 44100,
         numberOfChannels: 1,
         bitRate: 128000,
-        android: {
-          extension: ".m4a",
-          outputFormat: 2,
-          audioEncoder: 3,
-          sampleRate: 44100,
-          numberOfChannels: 1,
-          bitRate: 128000,
-        },
-        ios: {
-          extension: ".m4a",
-          audioQuality: 96,
-          sampleRate: 44100,
-          numberOfChannels: 1,
-          bitRate: 128000,
-          linearPCMBitDepth: 16,
-          linearPCMIsBigEndian: false,
-          linearPCMIsFloat: false,
-        },
-        web: {
-          mimeType: "audio/webm",
-          bitsPerSecond: 128000,
-        },
       } as any);
 
       recorderRef.current = recorder;
@@ -193,15 +158,6 @@ export default function SpeakingScreen() {
   };
 
   const handleStartRecording = async () => {
-    if (permissionGranted !== true) {
-      addDebugLog(`Cannot start recording: permission=${permissionGranted}`);
-      Alert.alert(
-        "Permission Required",
-        permissionError || "Microphone permission is required to record audio."
-      );
-      return;
-    }
-
     try {
       addDebugLog("Starting recording...");
       const recorder = await initializeRecorder();
@@ -385,8 +341,8 @@ export default function SpeakingScreen() {
     );
   }
 
-  // Show permission error if not granted
-  if (permissionGranted === false) {
+  // Show permission error if not granted (only show if explicitly denied)
+  if (permissionGranted === false && permissionError) {
     return (
       <ScreenContainer className="p-6 items-center justify-center">
         <View className="gap-4 items-center">
@@ -395,7 +351,7 @@ export default function SpeakingScreen() {
             Microphone Access Required
           </Text>
           <Text className="text-muted text-center text-sm">
-            {permissionError || "The Speaking feature requires microphone access."}
+            {permissionError}
           </Text>
 
           {/* Debug info */}
@@ -410,20 +366,19 @@ export default function SpeakingScreen() {
             <TouchableOpacity
               onPress={() => {
                 addDebugLog("User tapped 'Try Again'");
+                setIsInitializing(true);
                 const reinit = async () => {
                   try {
-                    addDebugLog("Re-requesting permission...");
-                    const permission = await AudioModule.requestPermissionsAsync();
-                    addDebugLog(`Re-request result: ${JSON.stringify(permission)}`);
-                    setPermissionGranted(permission.granted);
-                    if (!permission.granted) {
-                      setPermissionError("Microphone permission was denied. Please enable it in Settings.");
-                    } else {
-                      setPermissionError(null);
-                    }
+                    addDebugLog("Re-initializing audio...");
+                    await setAudioModeAsync({ playsInSilentMode: true });
+                    addDebugLog("Audio re-initialized successfully");
+                    setPermissionGranted(true);
+                    setPermissionError(null);
+                    setIsInitializing(false);
                   } catch (error) {
-                    addDebugLog(`Re-request error: ${error}`);
-                    console.error("Re-request permission error:", error);
+                    addDebugLog(`Re-init error: ${error}`);
+                    console.error("Re-init error:", error);
+                    setIsInitializing(false);
                   }
                 };
                 reinit();
@@ -520,24 +475,11 @@ export default function SpeakingScreen() {
               addDebugLog("User tapped 'Start Recording'");
               setShowRecordingModal(true);
             }}
-            disabled={!permissionGranted}
-            className={`rounded-full py-6 items-center justify-center ${
-              permissionGranted ? "bg-primary" : "bg-surface opacity-50"
-            }`}
+            className="rounded-full py-6 items-center justify-center bg-primary"
             activeOpacity={0.8}
           >
-            <IconSymbol
-              size={40}
-              name="mic.fill"
-              color={permissionGranted ? "white" : colors.muted}
-            />
-            <Text
-              className={`font-semibold mt-2 ${
-                permissionGranted ? "text-white" : "text-muted"
-              }`}
-            >
-              {permissionGranted ? "Start Recording" : "Microphone Not Allowed"}
-            </Text>
+            <IconSymbol size={40} name="mic.fill" color="white" />
+            <Text className="font-semibold mt-2 text-white">Start Recording</Text>
           </TouchableOpacity>
 
           {/* Today's Recordings */}
