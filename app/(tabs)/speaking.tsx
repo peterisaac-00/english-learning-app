@@ -16,7 +16,7 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import * as Haptics from "expo-haptics";
 import { Platform } from "react-native";
 import { getRandomTopic, formatDuration } from "@/lib/speaking-topics";
-import { setAudioModeAsync, useAudioRecorder } from "expo-audio";
+import { setAudioModeAsync, useAudioRecorder, RecordingPresets, AudioModule } from "expo-audio";
 import * as FileSystem from "expo-file-system/legacy";
 
 export default function SpeakingScreen() {
@@ -24,34 +24,7 @@ export default function SpeakingScreen() {
   const colors = useColors();
 
   // Initialize audio recorder at component top level (CORRECT HOOK USAGE)
-  const recorder = useAudioRecorder({
-    extension: ".m4a",
-    sampleRate: 44100,
-    numberOfChannels: 1,
-    bitRate: 128000,
-    android: {
-      extension: ".m4a",
-      outputFormat: 2,
-      audioEncoder: 3,
-      sampleRate: 44100,
-      numberOfChannels: 1,
-      bitRate: 128000,
-    },
-    ios: {
-      extension: ".m4a",
-      audioQuality: 96,
-      sampleRate: 44100,
-      numberOfChannels: 1,
-      bitRate: 128000,
-      linearPCMBitDepth: 16,
-      linearPCMIsBigEndian: false,
-      linearPCMIsFloat: false,
-    },
-    web: {
-      mimeType: "audio/webm",
-      bitsPerSecond: 128000,
-    },
-  } as any);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
   const [currentTopic, setCurrentTopic] = useState("");
   const [showRecordingModal, setShowRecordingModal] = useState(false);
@@ -65,6 +38,7 @@ export default function SpeakingScreen() {
   const [playingRecordingId, setPlayingRecordingId] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [debugMessage, setDebugMessage] = useState<string>("");
+  const [isRecorderReady, setIsRecorderReady] = useState(false);
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -84,36 +58,60 @@ export default function SpeakingScreen() {
         // Step 1: Set audio mode
         try {
           addDebugLog("Setting audio mode...");
-          await setAudioModeAsync({ playsInSilentMode: true });
+          await setAudioModeAsync({ 
+            playsInSilentMode: true,
+          });
           addDebugLog("✓ Audio mode set successfully");
         } catch (error) {
           addDebugLog(`⚠ Audio mode setup warning: ${error}`);
         }
 
-        // Step 2: Check environment and set permission status
-        try {
-          addDebugLog("Checking environment...");
-          
-          // On web, microphone access is handled by browser
-          if (Platform.OS === "web") {
-            addDebugLog("Web environment detected - microphone access handled by browser");
+        // Step 2: Request microphone permission on native platforms
+        if (Platform.OS !== "web") {
+          try {
+            addDebugLog("Requesting microphone permission...");
+            
+            // Check if AudioModule.requestRecordingPermissionsAsync exists
+            if (AudioModule && typeof AudioModule.requestRecordingPermissionsAsync === "function") {
+              const permissionResult = await AudioModule.requestRecordingPermissionsAsync();
+              addDebugLog(`Permission request result: ${JSON.stringify(permissionResult)}`);
+              
+              if (permissionResult && permissionResult.granted) {
+                addDebugLog("✓ Microphone permission granted");
+                setPermissionGranted(true);
+                setPermissionError(null);
+              } else {
+                addDebugLog("✗ Microphone permission denied by user");
+                setPermissionGranted(false);
+                setPermissionError("Microphone permission is required to record. Please enable it in Settings.");
+              }
+            } else {
+              addDebugLog("⚠ AudioModule.requestRecordingPermissionsAsync not available, assuming permission granted");
+              setPermissionGranted(true);
+              setPermissionError(null);
+            }
+          } catch (error) {
+            addDebugLog(`⚠ Permission request error: ${error}`);
+            // Optimistically assume permission might be granted
             setPermissionGranted(true);
             setPermissionError(null);
-            setIsInitializing(false);
-            return;
           }
+        } else {
+          // Web environment
+          addDebugLog("Web environment detected - microphone access handled by browser");
+          setPermissionGranted(true);
+          setPermissionError(null);
+        }
 
-          // On native platforms, assume permission is available
-          // Actual permission will be requested by the OS when recording starts
-          addDebugLog("Native platform detected - permission will be requested on first recording");
-          setPermissionGranted(true);
-          setPermissionError(null);
+        // Step 3: Prepare recorder
+        try {
+          addDebugLog("Preparing audio recorder...");
+          await recorder.prepareToRecordAsync();
+          addDebugLog("✓ Audio recorder prepared");
+          setIsRecorderReady(true);
         } catch (error) {
-          addDebugLog(`⚠ Environment check note: ${error}`);
-          console.warn("Environment check warning:", error);
-          // Set to true optimistically and let recording attempt handle actual permission
-          setPermissionGranted(true);
-          setPermissionError(null);
+          addDebugLog(`⚠ Recorder preparation warning: ${error}`);
+          setIsRecorderReady(true); // Continue anyway
         }
 
         setIsInitializing(false);
@@ -127,7 +125,7 @@ export default function SpeakingScreen() {
     };
 
     initializeAudio();
-  }, []);
+  }, [recorder]);
 
   // Generate initial topic
   useEffect(() => {
@@ -169,12 +167,26 @@ export default function SpeakingScreen() {
         return;
       }
 
+      if (!isRecorderReady) {
+        addDebugLog("⚠ Recorder not ready, preparing...");
+        try {
+          await recorder.prepareToRecordAsync();
+          setIsRecorderReady(true);
+          addDebugLog("✓ Recorder prepared");
+        } catch (error) {
+          addDebugLog(`✗ Failed to prepare recorder: ${error}`);
+          Alert.alert("Recording Error", `Failed to prepare recorder: ${error instanceof Error ? error.message : "Unknown error"}`);
+          return;
+        }
+      }
+
       setRecordingTime(0);
       setIsRecording(true);
       setRecordingUri(null);
 
+      // Explicitly call record() method
       await recorder.record();
-      addDebugLog("✓ Recording started");
+      addDebugLog("✓ Recording started successfully");
 
       if (Platform.OS !== "web") {
         try {
@@ -248,19 +260,29 @@ export default function SpeakingScreen() {
       dispatch({
         type: "ADD_RECORDING",
         payload: {
-          id: Date.now().toString(),
+          id: `rec_${Date.now()}`,
+          date: today,
           topic: currentTopic,
           duration: recordingTime,
           uri: destUri,
-          date: today,
           createdAt: Date.now(),
         },
       });
 
-      setRecordingTime(0);
+      addDebugLog("✓ Recording added to history");
       setRecordingUri(null);
+      setRecordingTime(0);
       setShowRecordingModal(false);
-      Alert.alert("Saved", `Recording saved! Duration: ${formatDuration(recordingTime)}`);
+
+      if (Platform.OS !== "web") {
+        try {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch (error) {
+          console.warn("Haptics not available:", error);
+        }
+      }
+
+      Alert.alert("Success", "Recording saved successfully!");
     } catch (error) {
       addDebugLog(`✗ Save recording error: ${error}`);
       console.error("Save recording error:", error);
@@ -268,60 +290,26 @@ export default function SpeakingScreen() {
     }
   };
 
-  const handleDeleteRecording = async (recordingId: string) => {
+  const handlePlayRecording = async (recordingUri: string) => {
+    addDebugLog(`Playing recording: ${recordingUri}`);
+    // Playback functionality would be implemented here
+    Alert.alert("Playback", "Recording playback feature coming soon");
+  };
+
+  const handleDeleteRecording = (recordingId: string) => {
     Alert.alert("Delete Recording", "Are you sure you want to delete this recording?", [
-      { text: "Cancel", style: "cancel" },
+      { text: "Cancel", onPress: () => {} },
       {
         text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            addDebugLog(`Deleting recording ${recordingId}...`);
-            const recording = state.recordings.find((r) => r.id === recordingId);
-            if (recording && recording.uri) {
-              await FileSystem.deleteAsync(recording.uri, { idempotent: true });
-              addDebugLog(`✓ Recording file deleted`);
-            }
-            dispatch({ type: "DELETE_RECORDING", payload: recordingId });
-            setSelectedRecording(null);
-            if (Platform.OS !== "web") {
-              try {
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-              } catch (error) {
-                console.warn("Haptics not available:", error);
-              }
-            }
-          } catch (error) {
-            addDebugLog(`✗ Error deleting recording: ${error}`);
-            console.error("Error deleting recording:", error);
-            Alert.alert("Delete Error", `Failed to delete recording: ${error instanceof Error ? error.message : "Unknown error"}`);
-          }
+        onPress: () => {
+          dispatch({
+            type: "DELETE_RECORDING",
+            payload: recordingId,
+          });
+          addDebugLog(`✓ Recording deleted: ${recordingId}`);
         },
       },
     ]);
-  };
-
-  const handlePlayRecording = async (recordingUri: string, recordingId: string) => {
-    try {
-      if (playingRecordingId === recordingId) {
-        addDebugLog("Stopping playback");
-        setPlayingRecordingId(null);
-      } else {
-        addDebugLog(`Starting playback of ${recordingId}`);
-        setPlayingRecordingId(recordingId);
-        if (Platform.OS !== "web") {
-          try {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          } catch (error) {
-            console.warn("Haptics not available:", error);
-          }
-        }
-      }
-    } catch (error) {
-      addDebugLog(`✗ Playback error: ${error}`);
-      console.error("Playback error:", error);
-      Alert.alert("Playback Error", `Failed to play recording: ${error instanceof Error ? error.message : "Unknown error"}`);
-    }
   };
 
   const todayRecordings = useMemo(
@@ -329,364 +317,286 @@ export default function SpeakingScreen() {
     [state.recordings, today]
   );
 
-  const totalRecordingTime = useMemo(
-    () => state.recordings.reduce((sum, r) => sum + r.duration, 0),
-    [state.recordings]
-  );
+  const allRecordings = useMemo(() => {
+    const grouped: Record<string, any[]> = {};
+    state.recordings.forEach((recording) => {
+      if (!grouped[recording.date]) {
+        grouped[recording.date] = [];
+      }
+      grouped[recording.date].push(recording);
+    });
+    return Object.entries(grouped)
+      .sort(([dateA], [dateB]) => dateB.localeCompare(dateA))
+      .map(([date, recordings]) => ({
+        date,
+        recordings: recordings.sort((a, b) => b.id.localeCompare(a.id)),
+      }));
+  }, [state.recordings]);
 
-  // Show loading while initializing
   if (isInitializing) {
     return (
-      <ScreenContainer className="items-center justify-center p-6">
+      <ScreenContainer className="justify-center items-center">
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text className="text-muted mt-4">Initializing audio...</Text>
+        <Text className="mt-4 text-foreground">Initializing audio...</Text>
         {debugMessage && (
-          <View className="mt-6 bg-surface rounded-lg p-4 w-full max-h-32">
+          <ScrollView className="mt-4 w-full max-w-sm bg-surface p-3 rounded-lg max-h-40">
             <Text className="text-xs text-muted font-mono">{debugMessage}</Text>
-          </View>
+          </ScrollView>
         )}
       </ScreenContainer>
     );
   }
 
-  // Show permission error if not granted (only show if explicitly denied)
-  if (permissionGranted === false && permissionError) {
+  if (permissionGranted === false) {
     return (
-      <ScreenContainer className="p-6 items-center justify-center">
-        <View className="gap-4 items-center">
-          <IconSymbol size={64} name="mic.slash.fill" color={colors.error} />
-          <Text className="text-2xl font-bold text-foreground text-center">
-            Microphone Access Required
-          </Text>
-          <Text className="text-muted text-center text-sm">
-            {permissionError}
-          </Text>
-
-          {/* Debug info */}
-          {debugMessage && (
-            <View className="mt-4 bg-surface rounded-lg p-3 w-full border border-border">
-              <Text className="text-xs font-semibold text-foreground mb-2">Debug Info:</Text>
-              <Text className="text-xs text-muted font-mono">{debugMessage}</Text>
-            </View>
-          )}
-
-          <View className="gap-2 w-full mt-4">
-            <TouchableOpacity
-              onPress={() => {
-                addDebugLog("User tapped 'Try Again'");
-                setIsInitializing(true);
-                const reinit = async () => {
+      <ScreenContainer className="justify-center items-center p-4">
+        <View className="items-center gap-4">
+          <IconSymbol name="mic.slash.fill" size={48} color={colors.error} />
+          <Text className="text-xl font-bold text-foreground text-center">Microphone Permission Required</Text>
+          <Text className="text-sm text-muted text-center">{permissionError}</Text>
+              <TouchableOpacity
+                onPress={async () => {
                   try {
-                    addDebugLog("Re-initializing audio...");
-                    await setAudioModeAsync({ playsInSilentMode: true });
-                    addDebugLog("Audio re-initialized successfully");
-                    setPermissionGranted(true);
-                    setPermissionError(null);
-                    setIsInitializing(false);
+                    if (AudioModule && typeof AudioModule.requestRecordingPermissionsAsync === "function") {
+                      const result = await AudioModule.requestRecordingPermissionsAsync();
+                      if (result && result.granted) {
+                        setPermissionGranted(true);
+                        setPermissionError(null);
+                        addDebugLog("✓ Permission granted after retry");
+                      }
+                    }
                   } catch (error) {
-                    addDebugLog(`Re-init error: ${error}`);
-                    console.error("Re-init error:", error);
-                    setIsInitializing(false);
+                    addDebugLog(`Error requesting permission: ${error}`);
                   }
-                };
-                reinit();
-              }}
-              className="bg-primary rounded-lg px-6 py-3"
-            >
-              <Text className="text-white font-semibold text-center">Try Again</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => {
-                Alert.alert(
-                  "Enable Microphone Permission",
-                  "Go to Settings > Apps > English Learning > Permissions > Microphone and select 'Allow'",
-                  [{ text: "OK" }]
-                );
-              }}
-              className="border border-border rounded-lg px-6 py-3"
-            >
-              <Text className="text-foreground font-semibold text-center">Open Settings Guide</Text>
-            </TouchableOpacity>
-          </View>
+                }}
+                className="bg-primary px-6 py-3 rounded-full active:opacity-70"
+              >
+            <Text className="text-background font-semibold">Try Again</Text>
+          </TouchableOpacity>
         </View>
+        {debugMessage && (
+          <ScrollView className="mt-6 w-full bg-surface p-3 rounded-lg max-h-32">
+            <Text className="text-xs text-muted font-mono">{debugMessage}</Text>
+          </ScrollView>
+        )}
       </ScreenContainer>
     );
   }
 
   return (
-    <ScreenContainer className="p-6">
+    <ScreenContainer className="p-4">
       <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
         <View className="gap-6">
           {/* Header */}
           <View className="gap-2">
-            <Text className="text-3xl font-bold text-foreground">Speaking</Text>
-            <Text className="text-sm text-muted">Practice speaking with random topics</Text>
-          </View>
-
-          {/* Stats */}
-          <View className="flex-row gap-3">
-            <View className="flex-1 bg-surface rounded-xl p-4 border border-border">
-              <Text className="text-2xl font-bold text-primary">{todayRecordings.length}</Text>
-              <Text className="text-xs text-muted mt-1">Today</Text>
-            </View>
-            <View className="flex-1 bg-surface rounded-xl p-4 border border-border">
-              <Text className="text-2xl font-bold text-primary">{formatDuration(totalRecordingTime)}</Text>
-              <Text className="text-xs text-muted mt-1">Total Time</Text>
-            </View>
-          </View>
-
-          {/* Difficulty Selector */}
-          <View className="gap-3">
-            <Text className="text-sm font-medium text-foreground">Difficulty Level</Text>
-            <View className="flex-row gap-2">
-              {[1, 2, 3, 4, 5].map((level) => (
-                <TouchableOpacity
-                  key={level}
-                  onPress={() => dispatch({ type: "SET_DIFFICULTY", payload: level })}
-                  className={`flex-1 rounded-lg py-2 items-center border ${
-                    state.currentDifficulty === level
-                      ? "bg-primary border-primary"
-                      : "bg-surface border-border"
-                  }`}
-                  activeOpacity={0.8}
-                >
-                  <Text
-                    className={`font-semibold ${
-                      state.currentDifficulty === level ? "text-white" : "text-foreground"
-                    }`}
-                  >
-                    {level}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            <Text className="text-3xl font-bold text-foreground">Speaking Practice</Text>
+            <Text className="text-sm text-muted">Difficulty: Level {state.currentDifficulty}</Text>
           </View>
 
           {/* Topic Card */}
-          <View className="bg-gradient-to-r from-green-50 to-green-100 rounded-2xl p-6 border border-green-200">
-            <Text className="text-sm text-green-700 font-medium mb-2">Today's Topic</Text>
-            <Text className="text-2xl font-bold text-green-900 mb-4">{currentTopic}</Text>
+          <View className="bg-surface rounded-2xl p-6 border border-border gap-4">
+            <Text className="text-xs font-semibold text-muted uppercase tracking-wide">Today's Topic</Text>
+            <Text className="text-2xl font-bold text-foreground">{currentTopic}</Text>
             <TouchableOpacity
               onPress={handleRefreshTopic}
-              className="flex-row items-center gap-2 self-start"
-              activeOpacity={0.7}
+              className="flex-row items-center gap-2 self-start active:opacity-70"
             >
-              <IconSymbol size={16} name="chevron.right" color="#15803d" />
-              <Text className="text-sm font-medium text-green-700">Get New Topic</Text>
+              <IconSymbol name="arrow.clockwise" size={18} color={colors.primary} />
+              <Text className="text-sm font-semibold text-primary">New Topic</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Recording Button */}
-          <TouchableOpacity
-            onPress={() => {
-              addDebugLog("User tapped 'Start Recording'");
-              setShowRecordingModal(true);
-            }}
-            className="rounded-full py-6 items-center justify-center bg-primary"
-            activeOpacity={0.8}
-          >
-            <IconSymbol size={40} name="mic.fill" color="white" />
-            <Text className="font-semibold mt-2 text-white">Start Recording</Text>
-          </TouchableOpacity>
-
-          {/* Today's Recordings */}
-          <View className="gap-3">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-lg font-semibold text-foreground">Today's Recordings</Text>
-              {todayRecordings.length > 0 && (
-                <TouchableOpacity onPress={() => setShowHistoryModal(true)}>
-                  <Text className="text-sm text-primary font-medium">View All</Text>
-                </TouchableOpacity>
-              )}
+          {/* Quick Stats */}
+          <View className="flex-row gap-3">
+            <View className="flex-1 bg-surface rounded-xl p-4 border border-border items-center">
+              <Text className="text-2xl font-bold text-primary">{todayRecordings.length}</Text>
+              <Text className="text-xs text-muted mt-1">Today's Recordings</Text>
             </View>
-
-            {todayRecordings.length > 0 ? (
-              todayRecordings.slice(0, 3).map((recording) => (
-                <TouchableOpacity
-                  key={recording.id}
-                  onPress={() => {
-                    setSelectedRecording(recording);
-                    setShowHistoryModal(true);
-                  }}
-                  activeOpacity={0.7}
-                  className="bg-surface rounded-lg p-4 border border-border flex-row items-center justify-between"
-                >
-                  <View className="flex-1">
-                    <Text className="text-base font-semibold text-foreground">{recording.topic}</Text>
-                    <Text className="text-xs text-muted mt-1">{formatDuration(recording.duration)}</Text>
-                  </View>
-                  <IconSymbol size={20} name="chevron.right" color={colors.muted} />
-                </TouchableOpacity>
-              ))
-            ) : (
-              <View className="bg-surface rounded-lg p-6 items-center border border-border">
-                <IconSymbol size={32} name="mic.fill" color={colors.muted} />
-                <Text className="text-muted mt-2 text-center text-sm">No recordings yet today</Text>
-              </View>
-            )}
+            <View className="flex-1 bg-surface rounded-xl p-4 border border-border items-center">
+              <Text className="text-2xl font-bold text-primary">{state.recordings.length}</Text>
+              <Text className="text-xs text-muted mt-1">Total Recordings</Text>
+            </View>
           </View>
+
+          {/* Action Buttons */}
+          <View className="gap-3">
+            <TouchableOpacity
+              onPress={() => setShowRecordingModal(true)}
+              className="bg-primary rounded-xl py-4 items-center active:opacity-90"
+            >
+              <View className="flex-row items-center gap-2">
+                <IconSymbol name="mic.fill" size={20} color={colors.background} />
+                <Text className="text-lg font-bold text-background">Start Recording</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => setShowHistoryModal(true)}
+              className="bg-surface rounded-xl py-4 items-center border border-border active:opacity-90"
+            >
+              <View className="flex-row items-center gap-2">
+                <IconSymbol name="clock.fill" size={20} color={colors.primary} />
+                <Text className="text-lg font-bold text-foreground">View History</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+
+          {/* Debug Info */}
+          {debugMessage && (
+            <View className="bg-surface rounded-lg p-3 border border-border">
+              <Text className="text-xs font-semibold text-muted mb-2">Debug Log:</Text>
+              <ScrollView className="max-h-24">
+                <Text className="text-xs text-muted font-mono">{debugMessage}</Text>
+              </ScrollView>
+            </View>
+          )}
         </View>
       </ScrollView>
 
       {/* Recording Modal */}
-      <Modal
-        visible={showRecordingModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => {
-          if (!isRecording) {
-            setShowRecordingModal(false);
-          }
-        }}
-      >
-        <View className="flex-1 bg-black/50 justify-center items-center">
-          <View className="bg-background rounded-3xl p-8 w-5/6 gap-6">
-            <View className="items-center">
-              <Text className="text-xl font-bold text-foreground mb-2">Recording</Text>
-              <Text className="text-sm text-muted text-center">{currentTopic}</Text>
+      <Modal visible={showRecordingModal} animationType="slide" transparent>
+        <View className="flex-1 bg-black/50 justify-end">
+          <View className="bg-background rounded-t-3xl p-6 gap-6">
+            <View className="gap-2">
+              <Text className="text-2xl font-bold text-foreground">Record Your Speaking</Text>
+              <Text className="text-sm text-muted">Topic: {currentTopic}</Text>
             </View>
 
-            {/* Timer Display */}
-            <View className="bg-surface rounded-2xl p-6 items-center border border-border">
-              <Text className="text-5xl font-bold text-primary font-mono">
+            {/* Recording Display */}
+            <View className="bg-surface rounded-2xl p-6 items-center gap-4 border border-border">
+              <View className="flex-row items-center gap-2">
+                <View className={`w-3 h-3 rounded-full ${isRecording ? "bg-error" : "bg-muted"}`} />
+                <Text className="text-lg font-bold text-foreground">
+                  {isRecording ? "Recording..." : "Ready"}
+                </Text>
+              </View>
+              <Text className="text-4xl font-bold text-primary font-mono">
                 {formatDuration(recordingTime)}
               </Text>
-              <Text className="text-xs text-muted mt-2">{isRecording ? "Recording..." : "Paused"}</Text>
             </View>
 
             {/* Recording Controls */}
-            <View className="flex-row gap-3 justify-center">
+            <View className="flex-row gap-3">
               {!isRecording ? (
-                <TouchableOpacity
-                  onPress={handleStartRecording}
-                  className="bg-primary rounded-full p-4 items-center justify-center"
-                  activeOpacity={0.8}
-                >
-                  <IconSymbol size={32} name="mic.fill" color="white" />
+              <TouchableOpacity
+                onPress={handleStartRecording}
+                className="flex-1 bg-primary rounded-xl py-4 items-center active:opacity-90"
+              >
+                  <View className="flex-row items-center gap-2">
+                    <IconSymbol name="record.circle.fill" size={20} color={colors.background} />
+                    <Text className="text-lg font-bold text-background">Start</Text>
+                  </View>
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity
                   onPress={handleStopRecording}
-                  className="bg-error rounded-full p-4 items-center justify-center"
-                  activeOpacity={0.8}
+                  className="flex-1 bg-error rounded-xl py-4 items-center active:opacity-90"
                 >
-                  <View className="w-6 h-6 bg-white rounded-sm" />
+                  <View className="flex-row items-center gap-2">
+                    <IconSymbol name="stop.circle.fill" size={20} color={colors.background} />
+                    <Text className="text-lg font-bold text-background">Stop</Text>
+                  </View>
                 </TouchableOpacity>
               )}
             </View>
 
             {/* Save/Cancel Buttons */}
-            <View className="gap-2">
-              <TouchableOpacity
-                onPress={handleSaveRecording}
-                disabled={recordingTime === 0}
-                className={`rounded-lg py-3 items-center ${
-                  recordingTime === 0 ? "bg-surface opacity-50" : "bg-primary"
-                }`}
-                activeOpacity={0.8}
-              >
-                <Text className={`font-semibold ${recordingTime === 0 ? "text-muted" : "text-white"}`}>
-                  Save Recording
-                </Text>
-              </TouchableOpacity>
+            {recordingUri && !isRecording && (
+              <View className="flex-row gap-3">
+                <TouchableOpacity
+                  onPress={handleSaveRecording}
+                  className="flex-1 bg-success rounded-xl py-3 items-center active:opacity-90"
+                >
+                  <Text className="text-base font-bold text-background">Save Recording</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    setRecordingUri(null);
+                    setRecordingTime(0);
+                  }}
+                  className="flex-1 bg-surface rounded-xl py-3 items-center border border-border active:opacity-90"
+                >
+                  <Text className="text-base font-bold text-foreground">Discard</Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
-              <TouchableOpacity
-                onPress={() => {
-                  setShowRecordingModal(false);
-                  setRecordingTime(0);
-                  setIsRecording(false);
-                }}
-                className="border border-border rounded-lg py-3 items-center"
-                activeOpacity={0.8}
-              >
-                <Text className="text-foreground font-semibold">Cancel</Text>
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity
+              onPress={() => {
+                if (isRecording) {
+                  handleStopRecording();
+                }
+                setShowRecordingModal(false);
+                setRecordingUri(null);
+                setRecordingTime(0);
+              }}
+              className="bg-surface rounded-xl py-3 items-center border border-border active:opacity-90"
+            >
+              <Text className="text-base font-bold text-foreground">Close</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
       {/* History Modal */}
-      <Modal
-        visible={showHistoryModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowHistoryModal(false)}
-      >
-        <ScreenContainer className="p-6">
-          <View className="flex-row items-center justify-between mb-4">
-            <Text className="text-2xl font-bold text-foreground">Recording History</Text>
-            <TouchableOpacity onPress={() => setShowHistoryModal(false)}>
-              <Text className="text-2xl text-muted">×</Text>
-            </TouchableOpacity>
-          </View>
-
-          <FlatList
-            data={state.recordings}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => (
-              <View className="bg-surface rounded-lg p-4 mb-3 border border-border">
+      <Modal visible={showHistoryModal} animationType="slide" transparent>
+        <View className="flex-1 bg-black/50 justify-end">
+          <View className="bg-background rounded-t-3xl p-6 max-h-3/4">
+            <View className="gap-4 flex-1">
+              <View className="flex-row justify-between items-center">
+                <Text className="text-2xl font-bold text-foreground">Recording History</Text>
                 <TouchableOpacity
-                  onPress={() => setSelectedRecording(item)}
-                  activeOpacity={0.7}
-                  className="flex-row items-center justify-between"
+                  onPress={() => setShowHistoryModal(false)}
+                  className="active:opacity-70"
                 >
-                  <View className="flex-1">
-                    <Text className="text-base font-semibold text-foreground">{item.topic}</Text>
-                    <View className="flex-row gap-2 mt-1">
-                      <Text className="text-xs text-muted">{formatDuration(item.duration)}</Text>
-                      <Text className="text-xs text-muted">•</Text>
-                      <Text className="text-xs text-muted">
-                        {new Date(item.date).toLocaleDateString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                        })}
-                      </Text>
-                    </View>
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => handleDeleteRecording(item.id)}
-                    className="ml-2"
-                  >
-                    <IconSymbol size={20} name="chevron.right" color={colors.error} />
-                  </TouchableOpacity>
+                  <IconSymbol name="xmark.circle.fill" size={28} color={colors.muted} />
                 </TouchableOpacity>
+              </View>
 
-                <View className="flex-row items-center gap-2 mt-3 pt-3 border-t border-border">
-                  <TouchableOpacity
-                    onPress={() => handlePlayRecording(item.uri, item.id)}
-                    className="flex-1 flex-row items-center justify-center gap-2 bg-primary/10 rounded-lg py-2"
-                    activeOpacity={0.7}
-                  >
-                    <IconSymbol
-                      size={16}
-                      name={playingRecordingId === item.id ? "pause.fill" : "play.fill"}
-                      color={colors.primary}
-                    />
-                    <Text className="text-sm font-medium text-primary">
-                      {playingRecordingId === item.id ? "Playing" : "Play"}
-                    </Text>
-                  </TouchableOpacity>
+              {allRecordings.length === 0 ? (
+                <View className="flex-1 justify-center items-center">
+                  <Text className="text-muted">No recordings yet. Start practicing!</Text>
                 </View>
-              </View>
-            )}
-            scrollEnabled={true}
-            ListEmptyComponent={
-              <View className="items-center justify-center py-8">
-                <Text className="text-muted">No recordings yet</Text>
-              </View>
-            }
-          />
-
-          <TouchableOpacity
-            onPress={() => setShowHistoryModal(false)}
-            className="border border-border rounded-lg py-3 items-center mt-4"
-            activeOpacity={0.8}
-          >
-            <Text className="text-foreground font-semibold">Close</Text>
-          </TouchableOpacity>
-        </ScreenContainer>
+              ) : (
+                <FlatList
+                  data={allRecordings}
+                  keyExtractor={(item) => item.date}
+                  renderItem={({ item: dateGroup }) => (
+                    <View className="gap-2 mb-4">
+                      <Text className="text-sm font-semibold text-muted">
+                        {new Date(dateGroup.date).toLocaleDateString()}
+                      </Text>
+                      {dateGroup.recordings.map((recording) => (
+                        <View key={recording.id} className="bg-surface rounded-lg p-4 border border-border flex-row justify-between items-center">
+                          <View className="flex-1 gap-1">
+                            <Text className="font-semibold text-foreground">{recording.topic}</Text>
+                            <Text className="text-xs text-muted">
+                              {formatDuration(recording.duration)} • Level {recording.difficulty}
+                            </Text>
+                          </View>
+                          <View className="flex-row gap-2">
+                            <TouchableOpacity
+                              onPress={() => handlePlayRecording(recording.uri)}
+                              className="active:opacity-70"
+                            >
+                              <IconSymbol name="play.circle.fill" size={24} color={colors.primary} />
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              onPress={() => handleDeleteRecording(recording.id)}
+                              className="active:opacity-70"
+                            >
+                              <IconSymbol name="trash.fill" size={24} color={colors.error} />
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                />
+              )}
+            </View>
+          </View>
+        </View>
       </Modal>
     </ScreenContainer>
   );
