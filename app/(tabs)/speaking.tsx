@@ -39,8 +39,6 @@ export default function SpeakingScreen() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [debugMessage, setDebugMessage] = useState<string>("");
   const [isRecorderReady, setIsRecorderReady] = useState(false);
-  const [playbackPlayer, setPlaybackPlayer] = useState<any>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -100,29 +98,41 @@ export default function SpeakingScreen() {
           }
         } else {
           // Web environment
-          addDebugLog("Web environment detected, skipping permission request");
+          addDebugLog("Web environment detected - microphone access handled by browser");
           setPermissionGranted(true);
           setPermissionError(null);
         }
 
+        // Step 3: Prepare recorder
+        try {
+          addDebugLog("Preparing audio recorder...");
+          await recorder.prepareToRecordAsync();
+          addDebugLog("✓ Audio recorder prepared");
+          setIsRecorderReady(true);
+        } catch (error) {
+          addDebugLog(`⚠ Recorder preparation warning: ${error}`);
+          setIsRecorderReady(true); // Continue anyway
+        }
+
         setIsInitializing(false);
-        addDebugLog("✓ Audio initialization complete");
       } catch (error) {
-        addDebugLog(`✗ Initialization error: ${error}`);
+        addDebugLog(`✗ Audio initialization error: ${error}`);
+        console.error("Audio initialization error:", error);
         setIsInitializing(false);
-        setPermissionGranted(true); // Optimistic
+        setPermissionGranted(false);
+        setPermissionError(`Initialization error: ${error instanceof Error ? error.message : "Unknown error"}`);
       }
     };
 
     initializeAudio();
-  }, []);
+  }, [recorder]);
 
-  // Initialize topic on component mount
+  // Generate initial topic
   useEffect(() => {
     setCurrentTopic(getRandomTopic(state.currentDifficulty));
   }, [state.currentDifficulty]);
 
-  // Timer for recording
+  // Recording timer
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | undefined;
     if (isRecording) {
@@ -138,8 +148,6 @@ export default function SpeakingScreen() {
   const handleRefreshTopic = () => {
     const newTopic = getRandomTopic(state.currentDifficulty);
     setCurrentTopic(newTopic);
-    addDebugLog(`✓ New topic: ${newTopic}`);
-    
     if (Platform.OS !== "web") {
       try {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -154,82 +162,94 @@ export default function SpeakingScreen() {
       addDebugLog("Starting recording...");
       
       if (!recorder) {
-        addDebugLog("✗ Recorder not initialized");
-        Alert.alert("Error", "Recorder not initialized");
+        addDebugLog("✗ Recorder not available");
+        Alert.alert("Recording Error", "Audio recorder is not available");
         return;
       }
 
-      // Prepare recorder
-      try {
-        addDebugLog("Preparing recorder...");
-        await recorder.prepareToRecordAsync();
-        addDebugLog("✓ Recorder prepared");
-      } catch (error) {
-        addDebugLog(`⚠ Prepare error: ${error}`);
+      if (!isRecorderReady) {
+        addDebugLog("⚠ Recorder not ready, preparing...");
+        try {
+          await recorder.prepareToRecordAsync();
+          setIsRecorderReady(true);
+          addDebugLog("✓ Recorder prepared");
+        } catch (error) {
+          addDebugLog(`✗ Failed to prepare recorder: ${error}`);
+          Alert.alert("Recording Error", `Failed to prepare recorder: ${error instanceof Error ? error.message : "Unknown error"}`);
+          return;
+        }
       }
 
-      // Start recording
-      await recorder.record();
-      setIsRecording(true);
       setRecordingTime(0);
+      setIsRecording(true);
       setRecordingUri(null);
-      addDebugLog("✓ Recording started");
-      
+
+      // Explicitly call record() method
+      await recorder.record();
+      addDebugLog("✓ Recording started successfully");
+
       if (Platform.OS !== "web") {
         try {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } catch (error) {
           console.warn("Haptics not available:", error);
         }
       }
     } catch (error) {
-      addDebugLog(`✗ Start recording error: ${error}`);
+      addDebugLog(`✗ Recording start error: ${error}`);
+      console.error("Recording start error:", error);
+      setIsRecording(false);
       Alert.alert("Recording Error", `Failed to start recording: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   };
 
   const handleStopRecording = async () => {
     try {
-      addDebugLog("Stopping recording...");
-      
-      if (!recorder || !isRecording) {
-        addDebugLog("✗ No active recording");
+      if (!recorder) {
+        addDebugLog("⚠ Recorder not available when stopping");
+        setIsRecording(false);
         return;
       }
 
-      const result = await recorder.stop();
+      addDebugLog("Stopping recording...");
+      await recorder.stop();
       setIsRecording(false);
-      const recordingUriResult = typeof result === 'string' ? result : (result as any)?.uri || '';
-      addDebugLog(`✓ Recording stopped, URI: ${recordingUriResult}`);
-      setRecordingUri(recordingUriResult);
+
+      const uri = recorder.uri;
+      if (uri) {
+        setRecordingUri(uri);
+        addDebugLog(`✓ Recording stopped, URI: ${uri}`);
+      } else {
+        addDebugLog("⚠ Recording stopped but no URI returned");
+      }
 
       if (Platform.OS !== "web") {
         try {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } catch (error) {
           console.warn("Haptics not available:", error);
         }
       }
     } catch (error) {
       addDebugLog(`✗ Stop recording error: ${error}`);
-      Alert.alert("Error", `Failed to stop recording: ${error instanceof Error ? error.message : "Unknown error"}`);
+      console.error("Stop recording error:", error);
+      setIsRecording(false);
+      Alert.alert("Stop Recording Error", `Failed to stop recording: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   };
 
   const handleSaveRecording = async () => {
+    if (recordingTime === 0 || !recordingUri) {
+      addDebugLog("Cannot save: no recording data");
+      Alert.alert("No Recording", "Please record something before saving.");
+      return;
+    }
+
     try {
-      if (!recordingUri) {
-        addDebugLog("✗ No recording to save");
-        return;
-      }
-
-      addDebugLog(`Saving recording from: ${recordingUri}`);
-
-      // Create a permanent location for the recording
+      addDebugLog("Saving recording...");
       const fileName = `recording_${Date.now()}.m4a`;
       const destUri = `${FileSystem.documentDirectory}${fileName}`;
 
-      // Copy the recording to permanent storage
       await FileSystem.copyAsync({
         from: recordingUri,
         to: destUri,
@@ -252,6 +272,7 @@ export default function SpeakingScreen() {
       addDebugLog("✓ Recording added to history");
       setRecordingUri(null);
       setRecordingTime(0);
+      setShowRecordingModal(false);
 
       if (Platform.OS !== "web") {
         try {
@@ -270,33 +291,9 @@ export default function SpeakingScreen() {
   };
 
   const handlePlayRecording = async (recordingUri: string) => {
-    try {
-      addDebugLog(`Playing recording: ${recordingUri}`);
-      setPlayingRecordingId(recordingUri);
-      setIsPlaying(true);
-      
-      // Show alert that recording is playing
-      Alert.alert(
-        "Now Playing",
-        "Your recording is playing.",
-        [
-          {
-            text: "Stop",
-            onPress: () => {
-              setIsPlaying(false);
-              setPlayingRecordingId(null);
-              addDebugLog("✓ Playback stopped");
-            },
-          },
-        ]
-      );
-      
-      addDebugLog(`✓ Playing: ${recordingUri}`);
-    } catch (error) {
-      addDebugLog(`✗ Playback error: ${error}`);
-      Alert.alert("Playback Error", `Failed to play recording: ${error instanceof Error ? error.message : "Unknown error"}`);
-      setIsPlaying(false);
-    }
+    addDebugLog(`Playing recording: ${recordingUri}`);
+    // Playback functionality would be implemented here
+    Alert.alert("Playback", "Recording playback feature coming soon");
   };
 
   const handleDeleteRecording = (recordingId: string) => {
@@ -459,38 +456,24 @@ export default function SpeakingScreen() {
       {/* Recording Modal */}
       <Modal visible={showRecordingModal} animationType="slide" transparent>
         <View className="flex-1 bg-black/50 justify-end">
-          <View className="bg-background rounded-t-3xl p-6 max-h-3/4">
-            <View className="gap-4 flex-1">
-              <View className="flex-row justify-between items-center">
-                <Text className="text-2xl font-bold text-foreground">Record Speaking</Text>
-                <TouchableOpacity
-                  onPress={() => {
-                    if (isRecording) {
-                      handleStopRecording();
-                    }
-                    setShowRecordingModal(false);
-                    setRecordingUri(null);
-                    setRecordingTime(0);
-                  }}
-                  className="active:opacity-70"
-                >
-                  <IconSymbol name="xmark.circle.fill" size={28} color={colors.muted} />
-                </TouchableOpacity>
-              </View>
+          <View className="bg-background rounded-t-3xl p-6 gap-6">
+            <View className="gap-2">
+              <Text className="text-2xl font-bold text-foreground">Record Your Speaking</Text>
+              <Text className="text-sm text-muted">Topic: {currentTopic}</Text>
+            </View>
 
-              {/* Recording Timer */}
-              {isRecording && (
-                <View className="bg-error/10 rounded-lg p-4 items-center">
-                  <Text className="text-2xl font-bold text-error">{formatDuration(recordingTime)}</Text>
-                  <Text className="text-xs text-muted mt-2">Recording in progress...</Text>
-                </View>
-              )}
-
-              {/* Topic Display */}
-              <View className="bg-surface rounded-lg p-4 border border-border">
-                <Text className="text-xs font-semibold text-muted mb-2">Current Topic:</Text>
-                <Text className="text-lg font-bold text-foreground">{currentTopic}</Text>
+            {/* Recording Display */}
+            <View className="bg-surface rounded-2xl p-6 items-center gap-4 border border-border">
+              <View className="flex-row items-center gap-2">
+                <View className={`w-3 h-3 rounded-full ${isRecording ? "bg-error" : "bg-muted"}`} />
+                <Text className="text-lg font-bold text-foreground">
+                  {isRecording ? "Recording..." : "Ready"}
+                </Text>
               </View>
+              <Text className="text-4xl font-bold text-primary font-mono">
+                {formatDuration(recordingTime)}
+              </Text>
+            </View>
 
             {/* Recording Controls */}
             <View className="flex-row gap-3">
@@ -551,7 +534,6 @@ export default function SpeakingScreen() {
             >
               <Text className="text-base font-bold text-foreground">Close</Text>
             </TouchableOpacity>
-            </View>
           </View>
         </View>
       </Modal>
@@ -589,7 +571,7 @@ export default function SpeakingScreen() {
                           <View className="flex-1 gap-1">
                             <Text className="font-semibold text-foreground">{recording.topic}</Text>
                             <Text className="text-xs text-muted">
-                              {formatDuration(recording.duration)} • {new Date(recording.date).toLocaleDateString()}
+                              {formatDuration(recording.duration)} • Level {recording.difficulty}
                             </Text>
                           </View>
                           <View className="flex-row gap-2">
