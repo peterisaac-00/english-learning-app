@@ -571,7 +571,7 @@ export default function SpeakingScreen() {
                           <View className="flex-1 gap-1">
                             <Text className="font-semibold text-foreground">{recording.topic}</Text>
                             <Text className="text-xs text-muted">
-                              {formatDuration(recording.duration)} • Level {recording.difficulty}
+                              {formatDuration(recording.duration)} • {new Date(recording.date).toLocaleDateString()}
                             </Text>
                           </View>
                           <View className="flex-row gap-2">
