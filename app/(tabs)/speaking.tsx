@@ -40,6 +40,7 @@ export default function SpeakingScreen() {
   const [debugMessage, setDebugMessage] = useState<string>("");
   const [isRecorderReady, setIsRecorderReady] = useState(false);
   const [player, setPlayer] = useState<any>(null);
+  const soundRef = useRef<any>(null);
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -149,15 +150,22 @@ export default function SpeakingScreen() {
   // Cleanup playback on component unmount
   useEffect(() => {
     return () => {
-      if (player) {
-        player.pause();
+      if (soundRef.current) {
+        try {
+          soundRef.current.pauseAsync();
+          soundRef.current.unloadAsync();
+        } catch (e) {
+          console.warn("Error cleaning up audio:", e);
+        }
+        soundRef.current = null;
       }
     };
-  }, [player]);
+  }, []);
 
   const handleRefreshTopic = () => {
     const newTopic = getRandomTopic(state.currentDifficulty);
     setCurrentTopic(newTopic);
+    addDebugLog(`Topic refreshed: ${newTopic}`);
     if (Platform.OS !== "web") {
       try {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -169,38 +177,22 @@ export default function SpeakingScreen() {
 
   const handleStartRecording = async () => {
     try {
-      addDebugLog("Starting recording...");
-      
-      if (!recorder) {
-        addDebugLog("✗ Recorder not available");
-        Alert.alert("Recording Error", "Audio recorder is not available");
+      if (!isRecorderReady) {
+        addDebugLog("✗ Recorder not ready yet");
+        Alert.alert("Not Ready", "Audio recorder is still initializing. Please wait.");
         return;
       }
 
-      if (!isRecorderReady) {
-        addDebugLog("⚠ Recorder not ready, preparing...");
-        try {
-          await recorder.prepareToRecordAsync();
-          setIsRecorderReady(true);
-          addDebugLog("✓ Recorder prepared");
-        } catch (error) {
-          addDebugLog(`✗ Failed to prepare recorder: ${error}`);
-          Alert.alert("Recording Error", `Failed to prepare recorder: ${error instanceof Error ? error.message : "Unknown error"}`);
-          return;
-        }
-      }
-
-      setRecordingTime(0);
+      addDebugLog("Starting recording...");
       setIsRecording(true);
-      setRecordingUri(null);
+      setRecordingTime(0);
 
-      // Explicitly call record() method
       await recorder.record();
-      addDebugLog("✓ Recording started successfully");
+      addDebugLog("✓ Recording started");
 
       if (Platform.OS !== "web") {
         try {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         } catch (error) {
           console.warn("Haptics not available:", error);
         }
@@ -215,23 +207,13 @@ export default function SpeakingScreen() {
 
   const handleStopRecording = async () => {
     try {
-      if (!recorder) {
-        addDebugLog("⚠ Recorder not available when stopping");
-        setIsRecording(false);
-        return;
-      }
-
       addDebugLog("Stopping recording...");
-      await recorder.stop();
       setIsRecording(false);
 
-      const uri = recorder.uri;
-      if (uri) {
-        setRecordingUri(uri);
-        addDebugLog(`✓ Recording stopped, URI: ${uri}`);
-      } else {
-        addDebugLog("⚠ Recording stopped but no URI returned");
-      }
+      const result = await recorder.stop();
+      const resultUri = typeof result === 'string' ? result : (result as any)?.uri || null;
+      addDebugLog(`✓ Recording stopped. URI: ${resultUri}`);
+      setRecordingUri(resultUri);
 
       if (Platform.OS !== "web") {
         try {
@@ -241,22 +223,23 @@ export default function SpeakingScreen() {
         }
       }
     } catch (error) {
-      addDebugLog(`✗ Stop recording error: ${error}`);
-      console.error("Stop recording error:", error);
+      addDebugLog(`✗ Recording stop error: ${error}`);
+      console.error("Recording stop error:", error);
       setIsRecording(false);
-      Alert.alert("Stop Recording Error", `Failed to stop recording: ${error instanceof Error ? error.message : "Unknown error"}`);
+      Alert.alert("Recording Error", `Failed to stop recording: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   };
 
   const handleSaveRecording = async () => {
-    if (recordingTime === 0 || !recordingUri) {
-      addDebugLog("Cannot save: no recording data");
-      Alert.alert("No Recording", "Please record something before saving.");
-      return;
-    }
-
     try {
+      if (!recordingUri) {
+        addDebugLog("✗ No recording URI available");
+        Alert.alert("Error", "No recording to save");
+        return;
+      }
+
       addDebugLog("Saving recording...");
+
       const fileName = `recording_${Date.now()}.m4a`;
       const destUri = `${FileSystem.documentDirectory}${fileName}`;
 
@@ -303,9 +286,14 @@ export default function SpeakingScreen() {
   const handlePlayRecording = async (recordingUri: string, recordingId: string) => {
     try {
       // Stop any currently playing audio
-      if (player) {
-        await player.pause();
-        setPlayer(null);
+      if (soundRef.current) {
+        try {
+          await soundRef.current.pauseAsync();
+          await soundRef.current.unloadAsync();
+        } catch (e) {
+          console.warn("Error stopping previous playback:", e);
+        }
+        soundRef.current = null;
         if (playingRecordingId === recordingId) {
           setPlayingRecordingId(null);
           return; // Toggle off if same recording
@@ -317,22 +305,25 @@ export default function SpeakingScreen() {
 
       const { createAudioPlayer } = await import("expo-audio");
       const newPlayer = createAudioPlayer({ uri: recordingUri });
+      soundRef.current = newPlayer;
 
-      newPlayer.play();
-      setPlayer(newPlayer);
+      await newPlayer.play();
 
       // Auto-clear state when playback finishes
       newPlayer.addListener("playbackStatusUpdate", (status: any) => {
         if (status.didJustFinish) {
           setPlayingRecordingId(null);
-          setPlayer(null);
+          // Cleanup
+          if (soundRef.current === newPlayer) {
+            soundRef.current = null;
+          }
         }
       });
     } catch (error) {
       addDebugLog(`✗ Playback error: ${error}`);
       Alert.alert("Playback Error", `Failed to play recording: ${error instanceof Error ? error.message : "Unknown error"}`);
       setPlayingRecordingId(null);
-      setPlayer(null);
+      soundRef.current = null;
     }
   };
 
@@ -389,33 +380,20 @@ export default function SpeakingScreen() {
 
   if (permissionGranted === false) {
     return (
-      <ScreenContainer className="justify-center items-center p-4">
-        <View className="items-center gap-4">
-          <IconSymbol name="mic.slash.fill" size={48} color={colors.error} />
-          <Text className="text-xl font-bold text-foreground text-center">Microphone Permission Required</Text>
-          <Text className="text-sm text-muted text-center">{permissionError}</Text>
-              <TouchableOpacity
-                onPress={async () => {
-                  try {
-                    if (AudioModule && typeof AudioModule.requestRecordingPermissionsAsync === "function") {
-                      const result = await AudioModule.requestRecordingPermissionsAsync();
-                      if (result && result.granted) {
-                        setPermissionGranted(true);
-                        setPermissionError(null);
-                        addDebugLog("✓ Permission granted after retry");
-                      }
-                    }
-                  } catch (error) {
-                    addDebugLog(`Error requesting permission: ${error}`);
-                  }
-                }}
-                className="bg-primary px-6 py-3 rounded-full active:opacity-70"
-              >
-            <Text className="text-background font-semibold">Try Again</Text>
-          </TouchableOpacity>
-        </View>
+      <ScreenContainer className="justify-center items-center p-6 gap-4">
+        <Text className="text-2xl font-bold text-foreground text-center">Microphone Access Required</Text>
+        <Text className="text-base text-muted text-center">{permissionError}</Text>
+        <TouchableOpacity
+          onPress={() => {
+            setPermissionGranted(null);
+            setIsInitializing(true);
+          }}
+          className="bg-primary rounded-xl px-6 py-3 active:opacity-80"
+        >
+          <Text className="text-background font-semibold text-center">Try Again</Text>
+        </TouchableOpacity>
         {debugMessage && (
-          <ScrollView className="mt-6 w-full bg-surface p-3 rounded-lg max-h-32">
+          <ScrollView className="w-full bg-surface p-3 rounded-lg max-h-40">
             <Text className="text-xs text-muted font-mono">{debugMessage}</Text>
           </ScrollView>
         )}
@@ -424,133 +402,101 @@ export default function SpeakingScreen() {
   }
 
   return (
-    <ScreenContainer className="p-4">
-      <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
-        <View className="gap-6">
-          {/* Header */}
-          <View className="gap-2">
-            <Text className="text-3xl font-bold text-foreground">Speaking Practice</Text>
-            <Text className="text-sm text-muted">Difficulty: Level {state.currentDifficulty}</Text>
-          </View>
-
-          {/* Topic Card */}
-          <View className="bg-surface rounded-2xl p-6 border border-border gap-4">
-            <Text className="text-xs font-semibold text-muted uppercase tracking-wide">Today's Topic</Text>
-            <Text className="text-2xl font-bold text-foreground">{currentTopic}</Text>
-            <TouchableOpacity
-              onPress={handleRefreshTopic}
-              className="flex-row items-center gap-2 self-start active:opacity-70"
-            >
-              <IconSymbol name="arrow.clockwise" size={18} color={colors.primary} />
-              <Text className="text-sm font-semibold text-primary">New Topic</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Quick Stats */}
-          <View className="flex-row gap-3">
-            <View className="flex-1 bg-surface rounded-xl p-4 border border-border items-center">
-              <Text className="text-2xl font-bold text-primary">{todayRecordings.length}</Text>
-              <Text className="text-xs text-muted mt-1">Today's Recordings</Text>
-            </View>
-            <View className="flex-1 bg-surface rounded-xl p-4 border border-border items-center">
-              <Text className="text-2xl font-bold text-primary">{state.recordings.length}</Text>
-              <Text className="text-xs text-muted mt-1">Total Recordings</Text>
-            </View>
-          </View>
-
-          {/* Action Buttons */}
-          <View className="gap-3">
-            <TouchableOpacity
-              onPress={() => setShowRecordingModal(true)}
-              className="bg-primary rounded-xl py-4 items-center active:opacity-90"
-            >
-              <View className="flex-row items-center gap-2">
-                <IconSymbol name="mic.fill" size={20} color={colors.background} />
-                <Text className="text-lg font-bold text-background">Start Recording</Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => setShowHistoryModal(true)}
-              className="bg-surface rounded-xl py-4 items-center border border-border active:opacity-90"
-            >
-              <View className="flex-row items-center gap-2">
-                <IconSymbol name="clock.fill" size={20} color={colors.primary} />
-                <Text className="text-lg font-bold text-foreground">View History</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
-
-          {/* Debug Info */}
-          {debugMessage && (
-            <View className="bg-surface rounded-lg p-3 border border-border">
-              <Text className="text-xs font-semibold text-muted mb-2">Debug Log:</Text>
-              <ScrollView className="max-h-24">
-                <Text className="text-xs text-muted font-mono">{debugMessage}</Text>
-              </ScrollView>
-            </View>
-          )}
+    <ScreenContainer className="gap-6">
+      <ScrollView contentContainerStyle={{ flexGrow: 1 }} className="gap-6">
+        {/* Header */}
+        <View className="gap-2">
+          <Text className="text-3xl font-bold text-foreground">Speaking Practice</Text>
+          <Text className="text-base text-muted">Difficulty: Level {state.currentDifficulty}</Text>
         </View>
+
+        {/* Today's Topic Card */}
+        <View className="bg-surface rounded-2xl p-6 border border-border gap-4">
+          <Text className="text-sm font-semibold text-muted uppercase tracking-wide">Today's Topic</Text>
+          <Text className="text-2xl font-bold text-foreground">{currentTopic}</Text>
+          <TouchableOpacity
+            onPress={handleRefreshTopic}
+            className="active:opacity-70"
+          >
+            <Text className="text-primary font-semibold">New Topic</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Stats */}
+        <View className="flex-row gap-4">
+          <View className="flex-1 bg-surface rounded-xl p-4 border border-border items-center">
+            <Text className="text-2xl font-bold text-primary">{todayRecordings.length}</Text>
+            <Text className="text-xs text-muted mt-1">Today's Recordings</Text>
+          </View>
+          <View className="flex-1 bg-surface rounded-xl p-4 border border-border items-center">
+            <Text className="text-2xl font-bold text-primary">{state.recordings.length}</Text>
+            <Text className="text-xs text-muted mt-1">Total Recordings</Text>
+          </View>
+        </View>
+
+        {/* Recording Button */}
+        <TouchableOpacity
+          onPress={() => {
+            setShowRecordingModal(true);
+            if (!isRecording) {
+              handleStartRecording();
+            }
+          }}
+          className="bg-primary rounded-2xl py-4 items-center active:opacity-80"
+        >
+          <View className="flex-row items-center gap-2">
+            <IconSymbol name="mic.fill" size={24} color={colors.background} />
+            <Text className="text-lg font-bold text-background">Start Recording</Text>
+          </View>
+        </TouchableOpacity>
+
+        {/* View History Button */}
+        <TouchableOpacity
+          onPress={() => setShowHistoryModal(true)}
+          className="bg-surface rounded-2xl py-4 items-center border border-border active:opacity-70"
+        >
+          <Text className="text-lg font-bold text-foreground">View History</Text>
+        </TouchableOpacity>
       </ScrollView>
 
       {/* Recording Modal */}
       <Modal visible={showRecordingModal} animationType="slide" transparent>
         <View className="flex-1 bg-black/50 justify-end">
-          <View className="bg-background rounded-t-3xl p-6 gap-6">
-            <View className="gap-2">
-              <Text className="text-2xl font-bold text-foreground">Record Your Speaking</Text>
-              <Text className="text-sm text-muted">Topic: {currentTopic}</Text>
+          <View className="bg-background rounded-t-3xl p-6 gap-4">
+            <View className="flex-row justify-between items-center mb-4">
+              <Text className="text-2xl font-bold text-foreground">Recording</Text>
+              <Text className="text-lg font-semibold text-primary">{formatDuration(recordingTime)}</Text>
             </View>
 
-            {/* Recording Display */}
-            <View className="bg-surface rounded-2xl p-6 items-center gap-4 border border-border">
-              <View className="flex-row items-center gap-2">
-                <View className={`w-3 h-3 rounded-full ${isRecording ? "bg-error" : "bg-muted"}`} />
-                <Text className="text-lg font-bold text-foreground">
-                  {isRecording ? "Recording..." : "Ready"}
-                </Text>
-              </View>
-              <Text className="text-4xl font-bold text-primary font-mono">
-                {formatDuration(recordingTime)}
-              </Text>
+            <View className="bg-surface rounded-xl p-6 items-center border border-border">
+              <Text className="text-sm text-muted mb-2">Topic</Text>
+              <Text className="text-xl font-bold text-foreground text-center">{currentTopic}</Text>
             </View>
 
-            {/* Recording Controls */}
-            <View className="flex-row gap-3">
-              {!isRecording ? (
+            {isRecording && (
               <TouchableOpacity
-                onPress={handleStartRecording}
-                className="flex-1 bg-primary rounded-xl py-4 items-center active:opacity-90"
+                onPress={handleStopRecording}
+                className="bg-error rounded-xl py-3 items-center active:opacity-80"
               >
-                  <View className="flex-row items-center gap-2">
-                    <IconSymbol name="record.circle.fill" size={20} color={colors.background} />
-                    <Text className="text-lg font-bold text-background">Start</Text>
-                  </View>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity
-                  onPress={handleStopRecording}
-                  className="flex-1 bg-error rounded-xl py-4 items-center active:opacity-90"
-                >
-                  <View className="flex-row items-center gap-2">
-                    <IconSymbol name="stop.circle.fill" size={20} color={colors.background} />
-                    <Text className="text-lg font-bold text-background">Stop</Text>
-                  </View>
-                </TouchableOpacity>
-              )}
-            </View>
+                <Text className="text-base font-bold text-background">Stop Recording</Text>
+              </TouchableOpacity>
+            )}
 
-            {/* Save/Cancel Buttons */}
-            {recordingUri && !isRecording && (
-              <View className="flex-row gap-3">
+            {recordingUri && (
+              <View className="gap-3">
                 <TouchableOpacity
                   onPress={handleSaveRecording}
-                  className="flex-1 bg-success rounded-xl py-3 items-center active:opacity-90"
+                  className="bg-primary rounded-xl py-3 items-center active:opacity-80"
                 >
                   <Text className="text-base font-bold text-background">Save Recording</Text>
                 </TouchableOpacity>
+
                 <TouchableOpacity
                   onPress={() => {
+                    if (isRecording) {
+                      handleStopRecording();
+                    }
+                    setShowRecordingModal(false);
                     setRecordingUri(null);
                     setRecordingTime(0);
                   }}
@@ -578,10 +524,10 @@ export default function SpeakingScreen() {
         </View>
       </Modal>
 
-      {/* History Modal */}
+      {/* History Modal - FIXED LAYOUT */}
       <Modal visible={showHistoryModal} animationType="slide" transparent>
         <View className="flex-1 bg-black/50 justify-end">
-          <View className="bg-background rounded-t-3xl p-6 max-h-3/4">
+          <View className="bg-background rounded-t-3xl p-6 h-3/4 flex-1">
             <View className="gap-4 flex-1">
               <View className="flex-row justify-between items-center">
                 <Text className="text-2xl font-bold text-foreground">Recording History</Text>
@@ -595,12 +541,13 @@ export default function SpeakingScreen() {
 
               {allRecordings.length === 0 ? (
                 <View className="flex-1 justify-center items-center">
-                  <Text className="text-muted">No recordings yet. Start practicing!</Text>
+                  <Text className="text-muted text-center">No recordings yet. Start practicing!</Text>
                 </View>
               ) : (
                 <FlatList
                   data={allRecordings}
                   keyExtractor={(item) => item.date}
+                  scrollEnabled={true}
                   renderItem={({ item: dateGroup }) => (
                     <View className="gap-2 mb-4">
                       <Text className="text-sm font-semibold text-muted">
