@@ -39,6 +39,7 @@ export default function SpeakingScreen() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [debugMessage, setDebugMessage] = useState<string>("");
   const [isRecorderReady, setIsRecorderReady] = useState(false);
+  const [player, setPlayer] = useState<any>(null);
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -144,6 +145,15 @@ export default function SpeakingScreen() {
       if (interval) clearInterval(interval);
     };
   }, [isRecording]);
+
+  // Cleanup playback on component unmount
+  useEffect(() => {
+    return () => {
+      if (player) {
+        player.pause();
+      }
+    };
+  }, [player]);
 
   const handleRefreshTopic = () => {
     const newTopic = getRandomTopic(state.currentDifficulty);
@@ -290,10 +300,40 @@ export default function SpeakingScreen() {
     }
   };
 
-  const handlePlayRecording = async (recordingUri: string) => {
-    addDebugLog(`Playing recording: ${recordingUri}`);
-    // Playback functionality would be implemented here
-    Alert.alert("Playback", "Recording playback feature coming soon");
+  const handlePlayRecording = async (recordingUri: string, recordingId: string) => {
+    try {
+      // Stop any currently playing audio
+      if (player) {
+        await player.pause();
+        setPlayer(null);
+        if (playingRecordingId === recordingId) {
+          setPlayingRecordingId(null);
+          return; // Toggle off if same recording
+        }
+      }
+
+      addDebugLog(`Playing recording: ${recordingUri}`);
+      setPlayingRecordingId(recordingId);
+
+      const { createAudioPlayer } = await import("expo-audio");
+      const newPlayer = createAudioPlayer({ uri: recordingUri });
+
+      newPlayer.play();
+      setPlayer(newPlayer);
+
+      // Auto-clear state when playback finishes
+      newPlayer.addListener("playbackStatusUpdate", (status: any) => {
+        if (status.didJustFinish) {
+          setPlayingRecordingId(null);
+          setPlayer(null);
+        }
+      });
+    } catch (error) {
+      addDebugLog(`✗ Playback error: ${error}`);
+      Alert.alert("Playback Error", `Failed to play recording: ${error instanceof Error ? error.message : "Unknown error"}`);
+      setPlayingRecordingId(null);
+      setPlayer(null);
+    }
   };
 
   const handleDeleteRecording = (recordingId: string) => {
@@ -576,10 +616,14 @@ export default function SpeakingScreen() {
                           </View>
                           <View className="flex-row gap-2">
                             <TouchableOpacity
-                              onPress={() => handlePlayRecording(recording.uri)}
+                              onPress={() => handlePlayRecording(recording.uri, recording.id)}
                               className="active:opacity-70"
                             >
-                              <IconSymbol name="play.circle.fill" size={24} color={colors.primary} />
+                              <IconSymbol
+                                name={playingRecordingId === recording.id ? "pause.circle.fill" : "play.circle.fill"}
+                                size={24}
+                                color={colors.primary}
+                              />
                             </TouchableOpacity>
                             <TouchableOpacity
                               onPress={() => handleDeleteRecording(recording.id)}
